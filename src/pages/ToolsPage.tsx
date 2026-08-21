@@ -213,6 +213,7 @@ export function ToolsPage({ navigate, category }: Props) {
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {visibleTools.map((t, i) => {
                 const Icon = getIcon(t.icon);
+                // eslint-disable-next-line @typescript-eslint/no-unused-vars
                 const cat = categories.find((c) => c.id === t.category)!;
                 const isHovered = hoveredTool === t.id;
                 return (
@@ -358,6 +359,7 @@ export function ToolsPage({ navigate, category }: Props) {
               <div className="flex items-center gap-3">
                 {(() => {
                   const Icon = getIcon(selectedTool.icon);
+                  // eslint-disable-next-line @typescript-eslint/no-unused-vars
                   const cat = categories.find((c) => c.id === selectedTool.category)!;
                   return (
                     <span className="grid h-12 w-12 place-items-center rounded-2xl bg-ink-800 text-white">
