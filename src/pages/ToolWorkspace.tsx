@@ -1,7 +1,8 @@
 import {
-  useEffect,
-  useRef,
   useState,
+  useRef,
+  useCallback,
+  useEffect,
   type ComponentType,
 } from 'react';
 
@@ -28,10 +29,7 @@ import * as Icons from 'lucide-react';
 import type { Tool, ToolOption } from '@/data/tools';
 import * as Converters from '@/lib/converters';
 import * as PDFConverters from '@/lib/pdf-converters';
-import {
-  consumeConversion,
-  refundConversion,
-} from '@/lib/usage';
+import { consumeConversion, refundConversion } from '@/lib/usage';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 
@@ -40,208 +38,47 @@ type Props = {
   navigate: (path: string) => void;
 };
 
-type Stage =
-  | 'idle'
-  | 'working'
-  | 'done'
-  | 'error';
+type Stage = 'idle' | 'working' | 'done' | 'error';
 
-type ConversionOutput =
-  | Converters.ConvertResult
-  | Converters.ConvertResult[];
-
-/*
- * Some PDF functions in the old ToolWorkspace were referenced
- * even though they are not exported by the current pdf-converters.ts.
- *
- * Using this adapter prevents TypeScript from generating hundreds
- * of cascading errors. If a particular engine is not implemented
- * in pdf-converters.ts, the user receives a clear runtime message.
- */
-type ConverterFunction = (
-  ...args: any[]
-) => ConversionOutput | Promise<ConversionOutput>;
-
-const converterFunctions =
-  Converters as unknown as Record<
-    string,
-    ConverterFunction
-  >;
-
-const pdfConverterFunctions =
-  PDFConverters as unknown as Record<
-    string,
-    ConverterFunction
-  >;
-
-async function callConverter(
-  name: string,
-  ...args: any[]
-): Promise<ConversionOutput> {
-  const fn = converterFunctions[name];
-
-  if (typeof fn !== 'function') {
-    throw new Error(
-      `Converter "${name}" is not registered in src/lib/converters.ts.`
-    );
-  }
-
-  return await fn(...args);
-}
-
-async function callPDFConverter(
-  name: string,
-  ...args: any[]
-): Promise<ConversionOutput> {
-  const fn = pdfConverterFunctions[name];
-
-  if (typeof fn !== 'function') {
-    throw new Error(
-      `PDF converter "${name}" is not registered in src/lib/pdf-converters.ts.`
-    );
-  }
-
-  return await fn(...args);
-}
-
-export function ToolWorkspace({
-  tool,
-  navigate,
-}: Props) {
+export function ToolWorkspace({ tool, navigate }: Props) {
   const { user } = useAuth();
 
-  const [stage, setStage] =
-    useState<Stage>('idle');
+  const [stage, setStage] = useState<Stage>('idle');
+  const [error, setError] = useState<string | null>(null);
 
-  const [error, setError] =
-    useState<string | null>(null);
+  const [results, setResults] = useState<Converters.ConvertResult[]>([]);
+  const [storedFiles, setStoredFiles] = useState<File[]>([]);
 
-  const [results, setResults] =
-    useState<Converters.ConvertResult[]>([]);
-
-  const [storedFiles, setStoredFiles] =
-    useState<File[]>([]);
-
-  const [options, setOptions] =
-    useState<
-      Record<
-        string,
-        string | number | boolean
-      >
-    >(() => {
-      const defaults: Record<
-        string,
-        string | number | boolean
-      > = {};
-
-      tool.options?.forEach((option) => {
-        defaults[option.key] =
-          option.default;
-      });
-
-      return defaults;
-    });
-
-  const [userRequirement, setUserRequirement] =
-    useState('');
-
-  const [requirementMessage, setRequirementMessage] =
-    useState('');
-
-  const [progress, setProgress] =
-    useState(0);
-
-  const [previewResult, setPreviewResult] =
-    useState<Converters.ConvertResult | null>(
-      null
-    );
-
-  const [emailResult, setEmailResult] =
-    useState<Converters.ConvertResult | null>(
-      null
-    );
-
-  const [emailAddress, setEmailAddress] =
-    useState('');
-
-  const [emailStatus, setEmailStatus] =
-    useState<string | null>(null);
-
-  const [emailSending, setEmailSending] =
-    useState(false);
-
-  const [dragOver, setDragOver] =
-    useState(false);
-
-  const inputRef =
-    useRef<HTMLInputElement>(null);
-
-  /*
-   * ---------------------------------------------------------
-   * RESET OPTIONS WHEN TOOL CHANGES
-   * ---------------------------------------------------------
-   */
-
-  useEffect(() => {
-    const defaults: Record<
-      string,
-      string | number | boolean
-    > = {};
+  const [options, setOptions] = useState<
+    Record<string, string | number | boolean>
+  >(() => {
+    const defaults: Record<string, string | number | boolean> = {};
 
     tool.options?.forEach((option) => {
-      defaults[option.key] =
-        option.default;
+      defaults[option.key] = option.default;
     });
 
-    setOptions(defaults);
-    setStage('idle');
-    setError(null);
-    setResults([]);
-    setStoredFiles([]);
-    setProgress(0);
-    setPreviewResult(null);
-    setEmailResult(null);
-    setEmailStatus(null);
-    setEmailAddress('');
-    setUserRequirement('');
-    setRequirementMessage('');
-  }, [tool]);
+    return defaults;
+  });
 
-  /*
-   * ---------------------------------------------------------
-   * SMOOTH PROGRESS
-   * ---------------------------------------------------------
-   */
+  const [userRequirement, setUserRequirement] = useState('');
+  const [requirementMessage, setRequirementMessage] = useState('');
 
-  useEffect(() => {
-    if (stage !== 'working') {
-      return;
-    }
+  const [progress, setProgress] = useState(0);
 
-    const timer =
-      window.setInterval(() => {
-        setProgress((value) => {
-          if (value >= 92) {
-            return value;
-          }
+  const [previewResult, setPreviewResult] =
+    useState<Converters.ConvertResult | null>(null);
 
-          const step =
-            value < 35
-              ? 4
-              : value < 70
-                ? 2
-                : 0.8;
+  const [emailResult, setEmailResult] =
+    useState<Converters.ConvertResult | null>(null);
 
-          return Math.min(
-            92,
-            value + step
-          );
-        });
-      }, 180);
+  const [emailAddress, setEmailAddress] = useState('');
+  const [emailStatus, setEmailStatus] = useState<string | null>(null);
+  const [emailSending, setEmailSending] = useState(false);
 
-    return () =>
-      window.clearInterval(timer);
-  }, [stage]);
+  const [dragOver, setDragOver] = useState(false);
+
+  const inputRef = useRef<HTMLInputElement>(null);
 
   /*
    * ---------------------------------------------------------
@@ -250,15 +87,9 @@ export function ToolWorkspace({
    */
 
   const getIcon = (name: string) => {
-    const Icon =
-      (
-        Icons as unknown as Record<
-          string,
-          ComponentType<{
-            className?: string;
-          }>
-        >
-      )[name];
+    const Icon = (
+      Icons as unknown as Record<string, ComponentType<{ className?: string }>>
+    )[name];
 
     return Icon ? (
       <Icon className="h-5 w-5" />
@@ -269,16 +100,13 @@ export function ToolWorkspace({
 
   /*
    * ---------------------------------------------------------
-   * OPTION HELPERS
+   * UPDATE OPTION
    * ---------------------------------------------------------
    */
 
   const updateOption = (
     key: string,
-    value:
-      | string
-      | number
-      | boolean
+    value: string | number | boolean
   ) => {
     setOptions((previous) => ({
       ...previous,
@@ -288,897 +116,287 @@ export function ToolWorkspace({
 
   /*
    * ---------------------------------------------------------
-   * EXECUTE CONVERSION
+   * RUN CONVERSION
    * ---------------------------------------------------------
    */
 
   const executeConversion = async (
     files: File[],
-    opts: Record<
-      string,
-      string | number | boolean
-    >
-  ): Promise<ConversionOutput> => {
+    opts: Record<string, string | number | boolean>
+  ): Promise<Converters.ConvertResult | Converters.ConvertResult[]> => {
     const first = files[0];
 
-    const text = (
-      key = 'text'
-    ): string =>
-      String(opts[key] ?? '').trim();
-
-    const num = (
-      key: string,
-      fallback = 0
-    ): number => {
-      const value = Number(
-        opts[key]
-      );
-
-      return Number.isFinite(value)
-        ? value
-        : fallback;
+    const text = (key = 'text') => String(opts[key] ?? '').trim();
+    const num = (key: string, fallback = 0) => {
+      const value = Number(opts[key]);
+      return Number.isFinite(value) ? value : fallback;
     };
-
-    const bool = (
-      key: string,
-      fallback = false
-    ): boolean =>
-      typeof opts[key] === 'boolean'
-        ? Boolean(opts[key])
-        : fallback;
-
-    if (
-      tool.inputType === 'file' ||
-      tool.inputType === 'multi-file' ||
-      tool.inputType === 'file-options'
-    ) {
-      if (!first && files.length === 0) {
-        throw new Error(
-          'Please upload a file first.'
-        );
-      }
-    }
+    const bool = (key: string, fallback = false) =>
+      typeof opts[key] === 'boolean' ? Boolean(opts[key]) : fallback;
 
     switch (tool.engine) {
-      /*
-       * ======================================================
-       * IMAGE TOOLS
-       * ======================================================
-       */
-
+      // Image tools
       case 'imageToImage':
-        return callConverter(
-          'imageToImage',
-          first,
-          text('targetFormat')
-        );
-
+        return Converters.imageToImage(first, text('targetFormat'));
       case 'imageToPDF':
-        return callConverter(
-          'imageToPDF',
-          first
-        );
-
+        return Converters.imageToPDF(first);
       case 'imageCompress':
-        return callConverter(
-          'imageCompress',
-          first,
-          {
-            mode: text('mode') as
-              | 'target-size'
-              | 'quality'
-              | 'balanced',
-
-            targetSize: num(
-              'targetSize',
-              200
-            ),
-
-            targetUnit: text(
-              'targetUnit'
-            ) as 'KB' | 'MB',
-
-            quality: num(
-              'quality',
-              85
-            ),
-
-            format: text(
-              'format'
-            ) as
-              | 'auto'
-              | 'jpg'
-              | 'webp'
-              | 'png',
-
-            preserveDimensions:
-              bool(
-                'preserveDimensions',
-                true
-              ),
-          }
-        );
-
+        return Converters.imageCompress(first, {
+          mode: text('mode') as 'target-size' | 'quality' | 'balanced',
+          targetSize: num('targetSize', 200),
+          targetUnit: text('targetUnit') as 'KB' | 'MB',
+          quality: num('quality', 85),
+          format: text('format') as 'auto' | 'jpg' | 'webp' | 'png',
+          preserveDimensions: bool('preserveDimensions', true),
+        });
       case 'imageResize':
-        return callConverter(
-          'imageResize',
-          first,
-          {
-            mode: text(
-              'mode'
-            ) as
-              | 'dimensions'
-              | 'percentage'
-              | 'long-edge',
-
-            width: num(
-              'width',
-              1080
-            ),
-
-            height: num(
-              'height',
-              1080
-            ),
-
-            percentage: num(
-              'percentage',
-              50
-            ),
-
-            longEdge: num(
-              'longEdge',
-              1200
-            ),
-
-            fitMode: text(
-              'fitMode'
-            ) as
-              | 'fit'
-              | 'fill'
-              | 'stretch',
-
-            preserveAspectRatio:
-              bool(
-                'preserveAspectRatio',
-                true
-              ),
-          }
-        );
-
+        return Converters.imageResize(first, {
+          mode: text('mode') as 'dimensions' | 'percentage' | 'long-edge',
+          width: num('width', 1080),
+          height: num('height', 1080),
+          percentage: num('percentage', 50),
+          longEdge: num('longEdge', 1200),
+          fitMode: text('fitMode') as 'fit' | 'fill' | 'stretch',
+          preserveAspectRatio: bool('preserveAspectRatio', true),
+        });
       case 'imageRotate':
-        return callConverter(
-          'imageRotate',
-          first,
-          {
-            degrees: num(
-              'degrees',
-              90
-            ),
-
-            direction: text(
-              'direction'
-            ) as
-              | 'clockwise'
-              | 'counterclockwise',
-
-            expand: bool(
-              'expand',
-              true
-            ),
-          }
-        );
-
+        return Converters.imageRotate(first, {
+          degrees: num('degrees', 90),
+          direction: text('direction') as 'clockwise' | 'counterclockwise',
+          expand: bool('expand', true),
+        });
       case 'imageGrayscale':
-        return callConverter(
-          'imageGrayscale',
-          first
-        );
-
+        return Converters.imageGrayscale(first);
       case 'imageFlip':
-        return callConverter(
-          'imageFlip',
-          first,
-          text('axis') as
-            | 'h'
-            | 'v'
-        );
-
+        return Converters.imageFlip(first, text('axis') as 'h' | 'v');
       case 'imageToBase64':
-        return callConverter(
-          'imageToBase64',
-          first
-        );
-
+        return Converters.imageToBase64(first);
       case 'imageCropToSquare':
-        return callConverter(
-          'imageCropToSquare',
-          first,
-          {
-            position: text(
-              'position'
-            ) as
-              | 'center'
-              | 'top'
-              | 'bottom'
-              | 'left'
-              | 'right',
+        return Converters.imageCropToSquare(first, {
+          position: text('position') as 'center' | 'top' | 'bottom' | 'left' | 'right',
+          size: num('size', 1080),
+        });
 
-            size: num(
-              'size',
-              1080
-            ),
-          }
-        );
-
-      /*
-       * ======================================================
-       * PDF TOOLS
-       * ======================================================
-       */
-
-      /*
-       * IMPORTANT:
-       *
-       * Your old code used:
-       *
-       * Converters.pdfToImages(...)
-       *
-       * That function does not exist.
-       *
-       * The working implementation is:
-       *
-       * PDFConverters.pdfToJPG(...)
-       *
-       * This fixes:
-       *
-       * "No converter is registered for tool engine pdfToImages"
-       */
-
+      // PDF creation / manipulation
       case 'pdfToImages':
-        return callPDFConverter(
-          'pdfToJPG',
-          first,
-          num('quality', 90),
-          text('pageRange') || 'all'
-        );
-
-      case 'pdfToJPG':
-        return callPDFConverter(
-          'pdfToJPG',
-          first,
-          num('quality', 90),
-          text('pageRange') || 'all'
-        );
-
+        return Converters.pdfToImages(first, text('pageRange') || 'all');
       case 'imagesToPDF':
-        return callPDFConverter(
-          'imagesToPDF',
-          files
-        );
-
+        return PDFConverters.imagesToPDF(files);
       case 'mergePDFs':
-        return callPDFConverter(
-          'mergePDFs',
-          files
-        );
-
+        return PDFConverters.mergePDFs(files);
       case 'splitPDF':
-        return callPDFConverter(
-          'splitPDF',
-          first,
-          text('splitPoints')
-        );
-
+        return PDFConverters.splitPDF(first, text('splitPoints'));
       case 'textToPDF':
-        return callPDFConverter(
-          'textToPDF',
-          text('text'),
-          `${tool.name
-            .replace(/\s+/g, '-')
-            .toLowerCase()}.pdf`
-        );
-
+        return PDFConverters.textToPDF(text('text'), `${tool.name.replace(/\s+/g, '-').toLowerCase()}.pdf`);
       case 'htmlToPDF':
-        return callPDFConverter(
-          'htmlToPDF',
-          text('text'),
-          `${tool.name
-            .replace(/\s+/g, '-')
-            .toLowerCase()}.pdf`
-        );
-
+        return PDFConverters.htmlToPDF(text('text'), `${tool.name.replace(/\s+/g, '-').toLowerCase()}.pdf`);
       case 'pdfRemovePages':
-        return callPDFConverter(
-          'removePages',
-          first,
-          text('pageRange')
-        );
-
+        return PDFConverters.removePages(first, text('pageRange'));
       case 'pdfExtractPages':
-        return callPDFConverter(
-          'extractPages',
-          first,
-          text('pageRange')
-        );
-
+        return PDFConverters.extractPages(first, text('pageRange'));
       case 'pdfOrganize':
-        return callPDFConverter(
-          'organizePDF',
-          first,
-          text('pageOrder')
-        );
-
+        return PDFConverters.organizePDF(first, text('pageOrder'));
       case 'pdfScanToPDF':
-        return callPDFConverter(
-          'scanToPDF',
-          files
-        );
-
+        return PDFConverters.scanToPDF(files);
       case 'pdfOptimize':
-        return callPDFConverter(
-          'optimizePDF',
-          first
-        );
-
+        return PDFConverters.optimizePDF(first);
       case 'pdfCompress':
-        return callPDFConverter(
-          'compressPDF',
-          first,
-          num('quality', 75)
-        );
-
+        return PDFConverters.compressPDF(first, num('quality', 75));
       case 'pdfRepair':
-        return callPDFConverter(
-          'repairPDF',
-          first
-        );
-
+        return PDFConverters.repairPDF(first);
       case 'pdfOCR':
-        return callPDFConverter(
-          'ocrPDF',
-          first,
-          text('language') || 'eng'
-        );
-
+        return PDFConverters.ocrPDF(first, text('language') || 'eng');
       case 'pdfConvertTo':
-        return callPDFConverter(
-          'convertToPDF',
-          first
-        );
-
+        return PDFConverters.convertToPDF(first);
       case 'pdfJpgToPDF':
-        return callPDFConverter(
-          'jpgToPDF',
-          files
-        );
-
+        return PDFConverters.jpgToPDF(files);
       case 'pdfWordToPDF':
-        return callPDFConverter(
-          'wordToPDF',
-          first
-        );
-
+        return PDFConverters.wordToPDF(first);
       case 'pdfPptxToPDF':
-        return callPDFConverter(
-          'pptxToPDF',
-          first
-        );
-
+        return PDFConverters.pptxToPDF(first);
       case 'pdfExcelToPDF':
-        return callPDFConverter(
-          'excelToPDF',
-          first
-        );
-
+        return PDFConverters.excelToPDF(first);
       case 'pdfHtmlFileToPDF':
-        return callPDFConverter(
-          'htmlToPDFFile',
-          first
-        );
-
+        return PDFConverters.htmlToPDFFile(first);
+      case 'pdfToJPG':
+        return PDFConverters.pdfToJPG(first, num('quality', 90), text('pageRange') || 'all');
       case 'pdfToWord':
-        return callPDFConverter(
-          'pdfToWord',
-          first
-        );
-
+        return PDFConverters.pdfToWord(first);
       case 'pdfToPPTX':
-        return callPDFConverter(
-          'pdfToPPTX',
-          first
-        );
-
+        return PDFConverters.pdfToPPTX(first);
       case 'pdfToExcel':
-        return callPDFConverter(
-          'pdfToExcel',
-          first
-        );
-
+        return PDFConverters.pdfToExcel(first);
       case 'pdfToPDFA':
-        return callPDFConverter(
-          'pdfToPDFA',
-          first
-        );
-
+        return PDFConverters.pdfToPDFA(first);
       case 'pdfRotate':
-        return callPDFConverter(
-          'rotatePDF',
-          first,
-          num('degrees', 90)
-        );
-
+        return PDFConverters.rotatePDF(first, num('degrees', 90));
       case 'pdfAddPageNumbers':
-        return callPDFConverter(
-          'addPageNumbers',
-          first,
-          text('position') ||
-            'bottom-center'
-        );
-
+        return PDFConverters.addPageNumbers(first, text('position') || 'bottom-center');
       case 'pdfAddWatermark':
-        return callPDFConverter(
-          'addWatermark',
-          first,
-          text('text'),
-          num('opacity', 0.25)
-        );
-
+        return PDFConverters.addWatermark(first, text('text'), num('opacity', 0.25));
       case 'pdfCrop':
-        return callPDFConverter(
-          'cropPDF',
-          first,
-          num('margin', 20)
-        );
-
+        return PDFConverters.cropPDF(first, num('margin', 20));
       case 'pdfFlatten':
-        return callPDFConverter(
-          'flattenPDF',
-          first
-        );
-
+        return PDFConverters.flattenPDF(first);
       case 'pdfUnlock':
-        return callPDFConverter(
-          'unlockPDF',
-          first,
-          text('password')
-        );
-
+        return PDFConverters.unlockPDF(first, text('password'));
       case 'pdfProtect':
-        return callPDFConverter(
-          'protectPDF',
-          first,
-          text('password')
-        );
-
+        return PDFConverters.protectPDF(first, text('password'));
       case 'pdfSign':
-        return callPDFConverter(
-          'signPDF',
-          first,
-          text('name')
-        );
-
+        return PDFConverters.signPDF(first, text('name'));
       case 'pdfRedact':
-        return callPDFConverter(
-          'redactPDF',
-          first,
-          text('searchText')
-        );
-
+        return PDFConverters.redactPDF(first, text('searchText'));
       case 'pdfCompare':
-        if (files.length < 2) {
-          throw new Error(
-            'Please upload two PDF files to compare.'
-          );
-        }
-
-        return callPDFConverter(
-          'comparePDF',
-          files[0],
-          files[1]
-        );
-
+        if (files.length < 2) throw new Error('Please upload two PDF files to compare.');
+        return PDFConverters.comparePDF(files[0], files[1]);
       case 'pdfSummarize':
-        return callPDFConverter(
-          'summarizePDF',
-          first,
-          num('ratio', 0.25)
-        );
-
+        return PDFConverters.summarizePDF(first, num('ratio', 0.25));
       case 'pdfTranslate':
-        return callPDFConverter(
-          'translatePDF',
-          first,
-          text('targetLang') || 'en'
-        );
-
+        return PDFConverters.translatePDF(first, text('targetLang') || 'en');
       case 'pdfToMarkdown':
-        return callPDFConverter(
-          'pdfToMarkdown',
-          first
-        );
+        return PDFConverters.pdfToMarkdown(first);
 
-      /*
-       * ======================================================
-       * TEXT / DEVELOPER TOOLS
-       * ======================================================
-       */
-
+      // Text / developer tools
       case 'textCaseConvert':
-        return callConverter(
-          'textCaseConvert',
-          text('text'),
-          text('mode')
-        );
-
+        return Converters.textCaseConvert(text('text'), text('mode'));
       case 'textToBase64':
-        return callConverter(
-          'textToBase64',
-          text('text')
-        );
-
+        return Converters.textToBase64(text('text'));
       case 'base64ToText':
-        return callConverter(
-          'base64ToText',
-          text('text')
-        );
-
+        return Converters.base64ToText(text('text'));
       case 'textToBinary':
-        return callConverter(
-          'textToBinary',
-          text('text')
-        );
-
+        return Converters.textToBinary(text('text'));
       case 'binaryToText':
-        return callConverter(
-          'binaryToText',
-          text('text')
-        );
-
+        return Converters.binaryToText(text('text'));
       case 'textToHex':
-        return callConverter(
-          'textToHex',
-          text('text')
-        );
-
+        return Converters.textToHex(text('text'));
       case 'hexToText':
-        return callConverter(
-          'hexToText',
-          text('text')
-        );
-
+        return Converters.hexToText(text('text'));
       case 'textToMorse':
-        return callConverter(
-          'textToMorse',
-          text('text')
-        );
-
+        return Converters.textToMorse(text('text'));
       case 'morseToText':
-        return callConverter(
-          'morseToText',
-          text('text')
-        );
-
+        return Converters.morseToText(text('text'));
       case 'textToLeet':
-        return callConverter(
-          'textToLeet',
-          text('text')
-        );
-
+        return Converters.textToLeet(text('text'));
       case 'textRemoveDuplicates':
-        return callConverter(
-          'textRemoveDuplicates',
-          text('text')
-        );
-
+        return Converters.textRemoveDuplicates(text('text'));
       case 'textWordCount':
-        return callConverter(
-          'textWordCount',
-          text('text')
-        );
-
+        return Converters.textWordCount(text('text'));
       case 'textFindReplace':
-        return callConverter(
-          'textFindReplace',
-          text('text'),
-          text('find'),
-          text('replace')
-        );
-
+        return Converters.textFindReplace(text('text'), text('find'), text('replace'));
       case 'textSortLines':
-        return callConverter(
-          'textSortLines',
-          text('text'),
-          text('mode')
-        );
-
+        return Converters.textSortLines(text('text'), text('mode'));
       case 'textTrimLines':
-        return callConverter(
-          'textTrimLines',
-          text('text')
-        );
-
+        return Converters.textTrimLines(text('text'));
       case 'textAddLineNumbers':
-        return callConverter(
-          'textAddLineNumbers',
-          text('text')
-        );
-
+        return Converters.textAddLineNumbers(text('text'));
       case 'textSlugify':
-        return callConverter(
-          'textSlugify',
-          text('text')
-        );
-
+        return Converters.textSlugify(text('text'));
       case 'textLoremIpsum':
-        return callConverter(
-          'textLoremIpsum',
-          num('paragraphs', 3)
-        );
-
+        return Converters.textLoremIpsum(num('paragraphs', 3));
       case 'jsonBeautify':
-        return callConverter(
-          'jsonBeautify',
-          text('json'),
-          num('indent', 2)
-        );
-
+        return Converters.jsonBeautify(text('json'), num('indent', 2));
       case 'jsonMinify':
-        return callConverter(
-          'jsonMinify',
-          text('json')
-        );
-
+        return Converters.jsonMinify(text('json'));
       case 'jsonToCSV':
-        return callConverter(
-          'jsonToCSV',
-          text('json')
-        );
-
+        return Converters.jsonToCSV(text('json'));
       case 'csvToJSON':
-        return callConverter(
-          'csvToJSON',
-          text('text')
-        );
-
+        return Converters.csvToJSON(text('text'));
       case 'jsonToYAML':
-        return callConverter(
-          'jsonToYAML',
-          text('json')
-        );
-
+        return Converters.jsonToYAML(text('json'));
       case 'urlEncode':
-        return callConverter(
-          'urlEncode',
-          text('text')
-        );
-
+        return Converters.urlEncode(text('text'));
       case 'urlDecode':
-        return callConverter(
-          'urlDecode',
-          text('text')
-        );
-
+        return Converters.urlDecode(text('text'));
       case 'htmlEncode':
-        return callConverter(
-          'htmlEncode',
-          text('text')
-        );
-
+        return Converters.htmlEncode(text('text'));
       case 'htmlDecode':
-        return callConverter(
-          'htmlDecode',
-          text('text')
-        );
-
+        return Converters.htmlDecode(text('text'));
       case 'htmlToMarkdown':
-        return callConverter(
-          'htmlToMarkdown',
-          text('text')
-        );
-
+        return Converters.htmlToMarkdown(text('text'));
       case 'markdownToHTML':
-        return callConverter(
-          'markdownToHTML',
-          text('text')
-        );
-
+        return Converters.markdownToHTML(text('text'));
       case 'generateQRCode':
-        return callConverter(
-          'generateQRCode',
-          text('text'),
-          num('size', 512)
-        );
-
+        return Converters.generateQRCode(text('text'), num('size', 512));
       case 'generateQRCodeSVG':
-        return callConverter(
-          'generateQRCodeSVG',
-          text('text')
-        );
-
+        return Converters.generateQRCodeSVG(text('text'));
       case 'colorConverter':
-        return callConverter(
-          'colorConverter',
-          text('text')
-        );
-
+        return Converters.colorConverter(text('text'));
       case 'calculatePercentage':
-        return callConverter(
-          'calculatePercentage',
-          text('value'),
-          text('total')
-        );
-
+        return Converters.calculatePercentage(text('value'), text('total'));
       case 'calculateBMI':
-        return callConverter(
-          'calculateBMI',
-          text('weight'),
-          text('height')
-        );
-
+        return Converters.calculateBMI(text('weight'), text('height'));
       case 'calculateAge':
-        return callConverter(
-          'calculateAge',
-          text('birthDate')
-        );
-
+        return Converters.calculateAge(text('birthDate'));
       case 'calculateLoan':
-        return callConverter(
-          'calculateLoan',
-          text('principal'),
-          text('rate'),
-          text('years')
-        );
-
+        return Converters.calculateLoan(text('principal'), text('rate'), text('years'));
       case 'calculateUnit':
-        return callConverter(
-          'calculateUnit',
-          text('value'),
-          text('from'),
-          text('to'),
-          text('type')
-        );
-
+        return Converters.calculateUnit(text('value'), text('from'), text('to'), text('type'));
       case 'calculateTimezones':
-        return callConverter(
-          'calculateTimezones',
-          text('timezone')
-        );
-
+        return Converters.calculateTimezones(text('timezone'));
       case 'generateHash':
-        return callConverter(
-          'generateHash',
-          text('text'),
-          text('algorithm') ||
-            'SHA-256'
-        );
-
+        return Converters.generateHash(text('text'), text('algorithm') || 'SHA-256');
       case 'generateUUID':
-        return callConverter(
-          'generateUUID'
-        );
-
+        return Converters.generateUUID();
       case 'generatePassword':
-        return callConverter(
-          'generatePassword',
-          num('length', 16),
-          {
-            upper: bool(
-              'upper',
-              true
-            ),
-            lower: bool(
-              'lower',
-              true
-            ),
-            numbers: bool(
-              'numbers',
-              true
-            ),
-            symbols: bool(
-              'symbols',
-              true
-            ),
-          }
-        );
-
+        return Converters.generatePassword(num('length', 16), {
+          upper: bool('upper', true),
+          lower: bool('lower', true),
+          numbers: bool('numbers', true),
+          symbols: bool('symbols', true),
+        });
       default:
-        throw new Error(
-          `No converter is registered for tool engine "${tool.engine}".`
-        );
+        throw new Error(`No converter is registered for tool engine "${tool.engine}".`);
     }
   };
 
-  /*
-   * ---------------------------------------------------------
-   * RUN CONVERSION
-   * ---------------------------------------------------------
-   */
-
-  const runConversion = async (
-    files?: File[]
-  ) => {
-    const useFiles =
-      files && files.length > 0
-        ? files
-        : storedFiles;
-
-    const requiresFile =
-      tool.inputType === 'file' ||
-      tool.inputType ===
-        'multi-file' ||
-      tool.inputType ===
-        'file-options';
+  const runConversion = async (files?: File[]) => {
+    const useFiles = files && files.length > 0 ? files : storedFiles;
 
     if (
-      requiresFile &&
+      (tool.inputType === 'file' ||
+        tool.inputType === 'multi-file' ||
+        tool.inputType === 'file-options') &&
       useFiles.length === 0
     ) {
-      setError(
-        'Please upload a file first.'
-      );
+      setError('Please upload a file first.');
       setStage('error');
       return;
     }
 
-    if (stage === 'working') {
-      return;
-    }
+    if (stage === 'working') return;
 
     if (!user) {
-      setError(
-        'Please sign in before starting a conversion. Your free conversion credits are tied to your account.'
-      );
+      setError('Please sign in before starting a conversion. Your free conversion credits are tied to your account.');
       setStage('error');
       return;
     }
 
-    let reservationId:
-      | string
-      | null = null;
+    let reservationId: string | null = null;
 
     try {
-      const reservation =
-        await consumeConversion();
+      const reservation = await consumeConversion();
 
       if (!reservation.allowed) {
         setError(
           reservation.message ||
-            'You have reached your daily free conversion limit. Please upgrade to continue.'
+            `You have reached your daily free conversion limit. Please upgrade to continue.`
         );
-
         setStage('error');
         return;
       }
 
-      reservationId =
-        reservation.unlimited
-          ? null
-          : (
-              reservation.reservation_id ??
-              null
-            );
+      reservationId = reservation.unlimited ? null : (reservation.reservation_id ?? null);
 
-      if (
-        !reservation.unlimited &&
-        !reservationId
-      ) {
-        throw new Error(
-          'The conversion credit could not be reserved safely. Please try again.'
-        );
+      if (!reservation.unlimited && !reservationId) {
+        throw new Error('The conversion credit could not be reserved safely. Please try again.');
       }
     } catch (usageError) {
-      console.error(
-        'Conversion credit reservation failed:',
-        usageError
-      );
-
+      console.error('Conversion credit reservation failed:', usageError);
       setError(
         usageError instanceof Error
           ? usageError.message
           : 'Unable to reserve a conversion credit.'
       );
-
       setStage('error');
       return;
     }
@@ -1188,143 +406,72 @@ export function ToolWorkspace({
     setProgress(8);
 
     try {
-      const opts =
-        options as Record<
-          string,
-          string | number | boolean
-        >;
-
-      const output =
-        await executeConversion(
-          useFiles,
-          opts
-        );
+      const opts = options as Record<string, string | number | boolean>;
+      const output = await executeConversion(useFiles, opts);
 
       if (!output) {
-        throw new Error(
-          'The converter did not return a result.'
-        );
+        throw new Error('The converter did not return a result.');
       }
 
-      const resultArr =
-        Array.isArray(output)
-          ? output
-          : [output];
+      const resultArr = Array.isArray(output) ? output : [output];
 
-      const validResults =
-        resultArr.filter(
-          (
-            result
-          ): result is Converters.ConvertResult =>
-            Boolean(
-              result &&
-                result.blob instanceof Blob &&
-                result.blob.size > 0 &&
-                result.filename
-            )
-        );
+      const validResults = resultArr.filter(
+        (result) => result && result.blob instanceof Blob && result.blob.size > 0 && result.filename
+      );
 
-      if (
-        validResults.length === 0
-      ) {
-        throw new Error(
-          'The conversion completed but returned no usable output file.'
-        );
+      if (validResults.length === 0) {
+        throw new Error('The conversion completed but returned no usable output file.');
       }
 
       setProgress(100);
       setResults(validResults);
 
       if (user) {
-        const firstResult =
-          validResults[0];
-
-        const {
-          error: insertError,
-        } = await supabase
-          .from('conversions')
-          .insert({
-            tool_id: tool.id,
-            tool_name: tool.name,
-            category: tool.category,
-            input_name:
-              useFiles.length > 0
-                ? useFiles[0].name
-                : 'text-input',
-            output_name:
-              firstResult.filename,
-            output_format:
-              tool.outputFormat,
-            status: 'completed',
-            file_size:
-              firstResult.blob.size,
-          });
+        const firstResult = validResults[0];
+        const { error: insertError } = await supabase.from('conversions').insert({
+          tool_id: tool.id,
+          tool_name: tool.name,
+          category: tool.category,
+          input_name: useFiles.length > 0 ? useFiles[0].name : 'text-input',
+          output_name: firstResult.filename,
+          output_format: tool.outputFormat,
+          status: 'completed',
+          file_size: firstResult.blob.size,
+        });
 
         if (insertError) {
-          console.error(
-            'Failed to save conversion history:',
-            insertError
-          );
+          console.error('Failed to save conversion history:', insertError);
         }
       }
 
-      window.setTimeout(
-        () => setStage('done'),
-        150
-      );
+      setTimeout(() => setStage('done'), 150);
     } catch (err: unknown) {
-      console.error(
-        'Conversion error:',
-        err
-      );
+      console.error('Conversion error:', err);
 
-      const message =
-        err instanceof Error
-          ? err.message
-          : 'Conversion failed.';
-
+      const message = err instanceof Error ? err.message : 'Conversion failed.';
       setError(message);
       setStage('error');
 
       if (reservationId) {
         try {
-          await refundConversion(
-            reservationId
-          );
+          await refundConversion(reservationId);
         } catch (refundError) {
-          console.error(
-            'Failed to refund conversion credit:',
-            refundError
-          );
+          console.error('Failed to refund conversion credit:', refundError);
         }
       }
 
       if (user) {
-        const {
-          error: insertError,
-        } = await supabase
-          .from('conversions')
-          .insert({
-            tool_id: tool.id,
-            tool_name: tool.name,
-            category: tool.category,
-            input_name:
-              useFiles.length > 0
-                ? useFiles[0].name
-                : 'text-input',
-            output_name: '',
-            output_format:
-              tool.outputFormat,
-            status: 'failed',
-            file_size: null,
-          });
-
-        if (insertError) {
-          console.error(
-            'Failed to save failed conversion history:',
-            insertError
-          );
-        }
+        const { error: insertError } = await supabase.from('conversions').insert({
+          tool_id: tool.id,
+          tool_name: tool.name,
+          category: tool.category,
+          input_name: useFiles.length > 0 ? useFiles[0].name : 'text-input',
+          output_name: '',
+          output_format: tool.outputFormat,
+          status: 'failed',
+          file_size: null,
+        });
+        if (insertError) console.error('Failed to save failed conversion history:', insertError);
       }
     }
   };
@@ -1335,15 +482,11 @@ export function ToolWorkspace({
    * ---------------------------------------------------------
    */
 
-  const handleFiles = (
-    files: FileList | File[]
-  ) => {
-    const fileArr =
-      Array.from(files);
+ const handleFiles = useCallback(
+  (files: FileList | File[]) => {
+    const fileArr = Array.from(files);
 
-    if (
-      fileArr.length === 0
-    ) {
+    if (fileArr.length === 0) {
       return;
     }
 
@@ -1354,22 +497,18 @@ export function ToolWorkspace({
     setProgress(0);
 
     /*
-     * Normal file tools start automatically.
-     *
-     * file-options tools wait for the user
-     * to choose settings and click Run.
+     * Existing QuadraConverter behaviour:
+     * normal file tools automatically start after upload.
      */
     if (
       tool.inputType === 'file' ||
-      tool.inputType ===
-        'multi-file'
+      tool.inputType === 'multi-file'
     ) {
-      void runConversion(
-        fileArr
-      );
+      void runConversion(fileArr);
     }
-  };
-
+  },
+  [tool]
+);
   /*
    * ---------------------------------------------------------
    * DOWNLOAD
@@ -1379,63 +518,22 @@ export function ToolWorkspace({
   const handleDownload = (
     result: Converters.ConvertResult
   ) => {
-    const downloadFn =
-      converterFunctions[
-        'downloadBlob'
-      ];
-
-    if (
-      typeof downloadFn !==
-      'function'
-    ) {
-      const url =
-        URL.createObjectURL(
-          result.blob
-        );
-
-      const anchor =
-        document.createElement(
-          'a'
-        );
-
-      anchor.href = url;
-      anchor.download =
-        result.filename;
-
-      document.body.appendChild(
-        anchor
-      );
-
-      anchor.click();
-
-      anchor.remove();
-
-      URL.revokeObjectURL(url);
-
-      return;
-    }
-
-    void downloadFn(
+    Converters.downloadBlob(
       result.blob,
       result.filename
     );
   };
 
-  const handleDownloadAll =
-    () => {
-      results.forEach(
-        (result, index) => {
-          window.setTimeout(
-            () => {
-              handleDownload(
-                result
-              );
-            },
-            index * 200
-          );
-        }
-      );
-    };
+  const handleDownloadAll = () => {
+    results.forEach((result, index) => {
+      setTimeout(() => {
+        Converters.downloadBlob(
+          result.blob,
+          result.filename
+        );
+      }, index * 200);
+    });
+  };
 
   /*
    * ---------------------------------------------------------
@@ -1457,9 +555,7 @@ export function ToolWorkspace({
 
   const handleShare = (
     result: Converters.ConvertResult,
-    method:
-      | 'email'
-      | 'whatsapp'
+    method: 'email' | 'whatsapp'
   ) => {
     const subject =
       `Converted file: ${result.filename}`;
@@ -1470,12 +566,10 @@ export function ToolWorkspace({
       `Size: ${(result.blob.size / 1024).toFixed(1)} KB\n\n` +
       `Download it from QuadraConverter.`;
 
-    if (
-      method === 'whatsapp'
-    ) {
+    if (method === 'whatsapp') {
       window.open(
         `https://wa.me/?text=${encodeURIComponent(
-          `${subject}\n\n${body}`
+          subject + '\n\n' + body
         )}`,
         '_blank',
         'noopener,noreferrer'
@@ -1502,11 +596,8 @@ export function ToolWorkspace({
     setProgress(0);
     setStoredFiles([]);
     setPreviewResult(null);
-    setEmailResult(null);
-    setEmailAddress('');
-    setEmailStatus(null);
-    setUserRequirement('');
     setRequirementMessage('');
+    setUserRequirement('');
   };
 
   /*
@@ -1522,340 +613,237 @@ export function ToolWorkspace({
     'img-crop-square',
   ].includes(tool.id);
 
-  const understandRequirement =
-    () => {
-      const requirement =
-        userRequirement
-          .trim()
-          .toLowerCase();
+  const understandRequirement = () => {
+    const text =
+      userRequirement.trim().toLowerCase();
 
-      if (!requirement) {
-        setRequirementMessage(
-          'Please describe what you want to do with the image.'
+    if (!text) {
+      setRequirementMessage(
+        'Please describe what you want to do with the image.'
+      );
+      return;
+    }
+
+    setRequirementMessage('');
+
+    /*
+     * IMAGE COMPRESS
+     */
+
+    if (tool.id === 'img-compress') {
+      const sizeMatch = text.match(
+        /(\d+(?:\.\d+)?)\s*(kb|mb)/i
+      );
+
+      if (sizeMatch) {
+        updateOption(
+          'targetSize',
+          Number(sizeMatch[1])
         );
-
-        return;
-      }
-
-      setRequirementMessage('');
-
-      /*
-       * IMAGE COMPRESS
-       */
-
-      if (
-        tool.id === 'img-compress'
-      ) {
-        const sizeMatch =
-          requirement.match(
-            /(\d+(?:\.\d+)?)\s*(kb|mb)/i
-          );
-
-        if (sizeMatch) {
-          updateOption(
-            'targetSize',
-            Number(
-              sizeMatch[1]
-            )
-          );
-
-          updateOption(
-            'targetUnit',
-            sizeMatch[2].toUpperCase()
-          );
-
-          updateOption(
-            'mode',
-            'target-size'
-          );
-        }
-
-        if (
-          requirement.includes(
-            'webp'
-          )
-        ) {
-          updateOption(
-            'format',
-            'webp'
-          );
-        } else if (
-          requirement.includes(
-            'png'
-          )
-        ) {
-          updateOption(
-            'format',
-            'png'
-          );
-        } else if (
-          requirement.includes(
-            'jpg'
-          ) ||
-          requirement.includes(
-            'jpeg'
-          )
-        ) {
-          updateOption(
-            'format',
-            'jpg'
-          );
-        }
-
-        if (
-          requirement.includes(
-            'best quality'
-          ) ||
-          requirement.includes(
-            'maximum quality'
-          ) ||
-          requirement.includes(
-            'highest quality'
-          )
-        ) {
-          updateOption(
-            'quality',
-            95
-          );
-        }
-
-        setRequirementMessage(
-          'Requirement understood. Please review the settings below.'
-        );
-
-        return;
-      }
-
-      /*
-       * IMAGE RESIZE
-       */
-
-      if (
-        tool.id === 'img-resize'
-      ) {
-        const dimensionMatch =
-          requirement.match(
-            /(\d+)\s*[x×]\s*(\d+)/i
-          );
-
-        const percentageMatch =
-          requirement.match(
-            /(\d+)\s*%/i
-          );
-
-        const longEdgeMatch =
-          requirement.match(
-            /(?:longest|long)\s*(?:edge|side).*?(\d+)\s*(?:px|pixel)?/i
-          );
-
-        if (
-          dimensionMatch
-        ) {
-          updateOption(
-            'mode',
-            'dimensions'
-          );
-
-          updateOption(
-            'width',
-            Number(
-              dimensionMatch[1]
-            )
-          );
-
-          updateOption(
-            'height',
-            Number(
-              dimensionMatch[2]
-            )
-          );
-        } else if (
-          percentageMatch
-        ) {
-          updateOption(
-            'mode',
-            'percentage'
-          );
-
-          updateOption(
-            'percentage',
-            Number(
-              percentageMatch[1]
-            )
-          );
-        } else if (
-          longEdgeMatch
-        ) {
-          updateOption(
-            'mode',
-            'long-edge'
-          );
-
-          updateOption(
-            'longEdge',
-            Number(
-              longEdgeMatch[1]
-            )
-          );
-        }
-
-        if (
-          requirement.includes(
-            'without cropping'
-          ) ||
-          requirement.includes(
-            'no crop'
-          ) ||
-          requirement.includes(
-            'preserve aspect'
-          )
-        ) {
-          updateOption(
-            'fitMode',
-            'fit'
-          );
-
-          updateOption(
-            'preserveAspectRatio',
-            true
-          );
-        } else if (
-          requirement.includes(
-            'crop'
-          ) ||
-          requirement.includes(
-            'fill'
-          )
-        ) {
-          updateOption(
-            'fitMode',
-            'fill'
-          );
-        }
-
-        setRequirementMessage(
-          'Requirement understood. Please review the settings below.'
-        );
-
-        return;
-      }
-
-      /*
-       * IMAGE ROTATE
-       */
-
-      if (
-        tool.id === 'img-rotate'
-      ) {
-        const degreeMatch =
-          requirement.match(
-            /(\d+(?:\.\d+)?)\s*(?:degree|degrees|°)/i
-          );
-
-        if (degreeMatch) {
-          updateOption(
-            'degrees',
-            Number(
-              degreeMatch[1]
-            )
-          );
-        }
 
         updateOption(
-          'direction',
-          requirement.includes(
-            'counter'
-          ) ||
-            requirement.includes(
-              'anticlockwise'
-            ) ||
-            requirement.includes(
-              'anti-clockwise'
-            ) ||
-            requirement.includes(
-              'left'
-            )
-            ? 'counterclockwise'
-            : 'clockwise'
+          'targetUnit',
+          sizeMatch[2].toUpperCase()
         );
 
-        setRequirementMessage(
-          'Requirement understood. Please review the settings below.'
+        updateOption(
+          'mode',
+          'target-size'
         );
-
-        return;
       }
 
-      /*
-       * IMAGE CROP
-       */
+      if (text.includes('webp')) {
+        updateOption('format', 'webp');
+      } else if (text.includes('png')) {
+        updateOption('format', 'png');
+      } else if (
+        text.includes('jpg') ||
+        text.includes('jpeg')
+      ) {
+        updateOption('format', 'jpg');
+      }
 
       if (
-        tool.id ===
-        'img-crop-square'
+        text.includes('best quality') ||
+        text.includes('maximum quality') ||
+        text.includes('highest quality')
       ) {
-        if (
-          requirement.includes(
-            'top'
-          )
-        ) {
-          updateOption(
-            'position',
-            'top'
-          );
-        } else if (
-          requirement.includes(
-            'bottom'
-          )
-        ) {
-          updateOption(
-            'position',
-            'bottom'
-          );
-        } else if (
-          requirement.includes(
-            'left'
-          )
-        ) {
-          updateOption(
-            'position',
-            'left'
-          );
-        } else if (
-          requirement.includes(
-            'right'
-          )
-        ) {
-          updateOption(
-            'position',
-            'right'
-          );
-        } else {
-          updateOption(
-            'position',
-            'center'
-          );
-        }
+        updateOption('quality', 95);
+      }
 
-        const sizeMatch =
-          requirement.match(
-            /(\d+)\s*[x×]?\s*(?:px|pixel)/i
-          );
+      setRequirementMessage(
+        'Requirement understood. Please review the settings below.'
+      );
 
-        if (sizeMatch) {
-          updateOption(
-            'size',
-            Number(
-              sizeMatch[1]
-            )
-          );
-        }
+      return;
+    }
 
-        setRequirementMessage(
-          'Requirement understood. Please review the settings below.'
+    /*
+     * IMAGE RESIZE
+     */
+
+    if (tool.id === 'img-resize') {
+      const dimensionMatch = text.match(
+        /(\d+)\s*[x×]\s*(\d+)/i
+      );
+
+      const percentageMatch = text.match(
+        /(\d+)\s*%/i
+      );
+
+      const longEdgeMatch = text.match(
+        /(?:longest|long)\s*(?:edge|side).*?(\d+)\s*(?:px|pixel)?/i
+      );
+
+      if (dimensionMatch) {
+        updateOption(
+          'mode',
+          'dimensions'
+        );
+
+        updateOption(
+          'width',
+          Number(dimensionMatch[1])
+        );
+
+        updateOption(
+          'height',
+          Number(dimensionMatch[2])
+        );
+      } else if (percentageMatch) {
+        updateOption(
+          'mode',
+          'percentage'
+        );
+
+        updateOption(
+          'percentage',
+          Number(percentageMatch[1])
+        );
+      } else if (longEdgeMatch) {
+        updateOption(
+          'mode',
+          'long-edge'
+        );
+
+        updateOption(
+          'longEdge',
+          Number(longEdgeMatch[1])
         );
       }
-    };
+
+      if (
+        text.includes('without cropping') ||
+        text.includes('no crop') ||
+        text.includes('preserve aspect')
+      ) {
+        updateOption(
+          'fitMode',
+          'fit'
+        );
+
+        updateOption(
+          'preserveAspectRatio',
+          true
+        );
+      } else if (
+        text.includes('crop') ||
+        text.includes('fill')
+      ) {
+        updateOption(
+          'fitMode',
+          'fill'
+        );
+      }
+
+      setRequirementMessage(
+        'Requirement understood. Please review the settings below.'
+      );
+
+      return;
+    }
+
+    /*
+     * IMAGE ROTATE
+     */
+
+    if (tool.id === 'img-rotate') {
+      const degreeMatch = text.match(
+        /(\d+(?:\.\d+)?)\s*(?:degree|degrees|°)/i
+      );
+
+      if (degreeMatch) {
+        updateOption(
+          'degrees',
+          Number(degreeMatch[1])
+        );
+      }
+
+      updateOption(
+        'direction',
+        text.includes('counter') ||
+          text.includes('anticlockwise') ||
+          text.includes('anti-clockwise') ||
+          text.includes('left')
+          ? 'counterclockwise'
+          : 'clockwise'
+      );
+
+      setRequirementMessage(
+        'Requirement understood. Please review the settings below.'
+      );
+
+      return;
+    }
+
+    /*
+     * IMAGE CROP TO SQUARE
+     */
+
+    if (tool.id === 'img-crop-square') {
+      if (text.includes('top')) {
+        updateOption(
+          'position',
+          'top'
+        );
+      } else if (text.includes('bottom')) {
+        updateOption(
+          'position',
+          'bottom'
+        );
+      } else if (text.includes('left')) {
+        updateOption(
+          'position',
+          'left'
+        );
+      } else if (text.includes('right')) {
+        updateOption(
+          'position',
+          'right'
+        );
+      } else {
+        updateOption(
+          'position',
+          'center'
+        );
+      }
+
+      const sizeMatch = text.match(
+        /(\d+)\s*[x×]?\s*(?:px|pixel)/i
+      );
+
+      if (sizeMatch) {
+        updateOption(
+          'size',
+          Number(sizeMatch[1])
+        );
+      }
+
+      setRequirementMessage(
+        'Requirement understood. Please review the settings below.'
+      );
+    }
+  };
 
   /*
    * ---------------------------------------------------------
@@ -1864,22 +852,17 @@ export function ToolWorkspace({
    */
 
   const needsFile =
-    tool.inputType ===
-      'file' ||
-    tool.inputType ===
-      'multi-file';
+    tool.inputType === 'file' ||
+    tool.inputType === 'multi-file';
 
   const needsText =
-    tool.inputType ===
-    'text';
+    tool.inputType === 'text';
 
   const needsOptionsOnly =
-    tool.inputType ===
-    'none';
+    tool.inputType === 'none';
 
   const needsFileOptions =
-    tool.inputType ===
-    'file-options';
+    tool.inputType === 'file-options';
 
   /*
    * ---------------------------------------------------------
@@ -1889,134 +872,122 @@ export function ToolWorkspace({
 
   const renderFileZone = (
     compact: boolean
-  ) => {
-    return (
-      <div
-        onDragOver={(event) => {
-          event.preventDefault();
-          setDragOver(true);
-        }}
-        onDragLeave={() => {
-          setDragOver(false);
-        }}
-        onDrop={(event) => {
-          event.preventDefault();
-          setDragOver(false);
+  ) => (
+    <div
+      onDragOver={(event) => {
+        event.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={() => {
+        setDragOver(false);
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        setDragOver(false);
 
-          handleFiles(
-            event.dataTransfer.files
-          );
-        }}
-        onClick={() =>
-          inputRef.current?.click()
+        handleFiles(
+          event.dataTransfer.files
+        );
+      }}
+      onClick={() =>
+        inputRef.current?.click()
+      }
+      className={`
+        group relative cursor-pointer overflow-hidden rounded-2xl
+        border-2 border-dashed transition-all duration-300
+        ${
+          compact
+            ? 'p-8'
+            : 'p-10 sm:p-14'
         }
-        className={`
-          group relative cursor-pointer overflow-hidden rounded-2xl
-          border-2 border-dashed transition-all duration-300
-          ${
-            compact
-              ? 'p-8'
-              : 'p-10 sm:p-14'
-          }
-          ${
-            dragOver
-              ? 'border-brand-500 bg-brand-50/60 scale-[1.01]'
-              : 'border-ink-200 bg-white hover:border-brand-400 hover:bg-brand-50/30'
-          }
-        `}
-      >
-        <input
-          ref={inputRef}
-          type="file"
-          accept={
-            tool.accept || '*'
-          }
-          multiple={
-            tool.inputType ===
-            'multi-file'
-          }
-          className="hidden"
-          onChange={(event) => {
-            if (
+        ${
+          dragOver
+            ? 'border-brand-500 bg-brand-50/60 scale-[1.01]'
+            : 'border-ink-200 bg-white hover:border-brand-400 hover:bg-brand-50/30'
+        }
+      `}
+    >
+      <input
+        ref={inputRef}
+        type="file"
+        accept={tool.accept || '*'}
+        multiple={
+          tool.inputType ===
+          'multi-file'
+        }
+        className="hidden"
+        onChange={(event) => {
+          if (event.target.files) {
+            handleFiles(
               event.target.files
-            ) {
-              handleFiles(
-                event.target.files
-              );
+            );
+          }
+        }}
+      />
+
+      <div className="relative flex flex-col items-center text-center">
+        <div
+          className={`
+            grid place-items-center rounded-2xl
+            bg-ink-800 text-white shadow-glow
+            transition-transform group-hover:scale-105
+            ${
+              compact
+                ? 'h-14 w-14'
+                : 'h-16 w-16'
             }
-
-            event.currentTarget.value =
-              '';
-          }}
-        />
-
-        <div className="text-center">
-          <div className="mx-auto mb-5 grid h-16 w-16 place-items-center rounded-2xl bg-brand-50 text-brand-600">
-            <Download className="h-7 w-7" />
-          </div>
-
-          <p className="font-display text-lg font-bold text-ink-900">
-            {storedFiles.length >
-            0
-              ? 'Files selected'
-              : 'Drop your file here'}
-          </p>
-
-          <p className="mt-1 text-sm text-ink-500">
-            {storedFiles.length >
-            0
-              ? `${storedFiles.length} file${
-                  storedFiles.length >
-                  1
-                    ? 's'
-                    : ''
-                } selected`
-              : 'or click to browse from your computer'}
-          </p>
-
-          <p className="mt-3 text-xs text-ink-400">
-            {tool.accept ||
-              'Any file type'}
-          </p>
+          `}
+        >
+          <Icons.UploadCloud
+            className={
+              compact
+                ? 'h-6 w-6'
+                : 'h-7 w-7'
+            }
+            strokeWidth={2.2}
+          />
         </div>
 
-        {storedFiles.length >
-          0 && (
-          <div className="mt-6 space-y-2">
-            {storedFiles.map(
-              (
-                file,
-                index
-              ) => (
-                <div
-                  key={`${file.name}-${index}`}
-                  className="flex items-center justify-between rounded-xl border border-ink-100 bg-ink-50 px-4 py-3 text-left"
-                >
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold text-ink-900">
-                      {file.name}
-                    </p>
+        <p
+          className={`
+            mt-3 font-display font-bold text-ink-900
+            ${compact ? '' : 'text-lg'}
+          `}
+        >
+          {storedFiles.length > 0
+            ? `${storedFiles.length} file${
+                storedFiles.length > 1
+                  ? 's'
+                  : ''
+              } selected`
+            : `Drag & drop ${
+                tool.inputType ===
+                'multi-file'
+                  ? 'files'
+                  : 'a file'
+              } here`}
+        </p>
 
-                    <p className="text-xs text-ink-500">
-                      {(
-                        file.size /
-                        1024
-                      ).toFixed(
-                        1
-                      )}{' '}
-                      KB
-                    </p>
-                  </div>
+        <p className="mt-1 text-ink-500 text-sm">
+          {storedFiles.length > 0
+            ? storedFiles
+                .map(
+                  (file) =>
+                    file.name
+                )
+                .join(', ')
+                .substring(0, 60)
+            : 'or click to browse from your device'}
+        </p>
 
-                  <FileCheck2 className="h-5 w-5 shrink-0 text-brand-600" />
-                </div>
-              )
-            )}
-          </div>
-        )}
+        <p className="mt-2 text-xs text-ink-400">
+          Accepts:{' '}
+          {tool.accept ||
+            'Any file type'}
+        </p>
       </div>
-    );
-  };
+    </div>
+  );
 
   /*
    * ---------------------------------------------------------
@@ -2027,11 +998,10 @@ export function ToolWorkspace({
   return (
     <div className="container-page py-8">
       <button
-        type="button"
         onClick={() =>
           navigate('/tools')
         }
-        className="mb-6 flex items-center gap-2 text-sm font-semibold text-ink-500 transition hover:text-ink-900"
+        className="flex items-center gap-2 text-sm font-semibold text-ink-500 hover:text-ink-900 transition mb-6"
       >
         <ArrowLeft className="h-4 w-4" />
         Back to Tools
@@ -2042,7 +1012,7 @@ export function ToolWorkspace({
           {/* TOOL HEADER */}
 
           <div className="flex items-start gap-4">
-            <div className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-ink-100 text-ink-800">
+            <div className="w-14 h-14 rounded-2xl bg-ink-100 text-ink-800 grid place-items-center shrink-0">
               {getIcon(tool.icon)}
             </div>
 
@@ -2051,7 +1021,7 @@ export function ToolWorkspace({
                 {tool.name}
               </h1>
 
-              <p className="mt-0.5 text-ink-500">
+              <p className="text-ink-500 mt-0.5">
                 {tool.description}
               </p>
             </div>
@@ -2059,29 +1029,21 @@ export function ToolWorkspace({
 
           {/* MAIN CARD */}
 
-          <div className="overflow-hidden rounded-3xl border border-ink-200 bg-white shadow-card">
+          <div className="bg-white rounded-3xl border border-ink-200 shadow-card overflow-hidden">
             {/* IDLE */}
 
             {stage === 'idle' && (
               <div className="p-6 sm:p-8">
-                {/* FILE */}
-
                 {needsFile &&
-                  renderFileZone(
-                    false
-                  )}
-
-                {/* FILE + OPTIONS */}
+                  renderFileZone(false)}
 
                 {needsFileOptions && (
                   <>
-                    {renderFileZone(
-                      true
-                    )}
+                    {renderFileZone(true)}
 
                     {isAdvancedImageTool && (
                       <div className="mt-5 rounded-2xl border border-brand-100 bg-brand-50/40 p-5">
-                        <div className="mb-2 flex items-center gap-2">
+                        <div className="flex items-center gap-2 mb-2">
                           <Sparkles className="h-4 w-4 text-brand-600" />
 
                           <p className="text-sm font-bold text-ink-900">
@@ -2089,21 +1051,20 @@ export function ToolWorkspace({
                           </p>
                         </div>
 
-                        <p className="mb-3 text-xs text-ink-500">
-                          Describe your requirement in your own words. QuadraConverter will fill the advanced settings for you.
+                        <p className="text-xs text-ink-500 mb-3">
+                          Describe your requirement
+                          in your own words. Quadra
+                          will fill the advanced
+                          settings for you.
                         </p>
 
                         <textarea
                           value={
                             userRequirement
                           }
-                          onChange={(
-                            event
-                          ) =>
+                          onChange={(event) =>
                             setUserRequirement(
-                              event
-                                .target
-                                .value
+                              event.target.value
                             )
                           }
                           placeholder={
@@ -2111,15 +1072,15 @@ export function ToolWorkspace({
                             'img-compress'
                               ? 'Example: Compress this image below 200 KB while keeping the best possible quality.'
                               : tool.id ===
-                                  'img-resize'
-                                ? 'Example: Resize this image to 1080x1080 without cropping.'
-                                : tool.id ===
-                                    'img-rotate'
-                                  ? 'Example: Rotate this image 25 degrees clockwise.'
-                                  : 'Example: Crop this image to a 1080x1080 square from the top.'
+                                'img-resize'
+                              ? 'Example: Resize this image to 1080x1080 without cropping.'
+                              : tool.id ===
+                                'img-rotate'
+                              ? 'Example: Rotate this image 25 degrees clockwise.'
+                              : 'Example: Crop this image to a 1080x1080 square from the top.'
                           }
                           rows={3}
-                          className="w-full resize-none rounded-xl border border-ink-200 bg-white px-4 py-3 text-sm text-ink-900 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                          className="w-full rounded-xl border border-ink-200 bg-white px-4 py-3 text-sm text-ink-900 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100 resize-none"
                         />
 
                         <button
@@ -2127,14 +1088,14 @@ export function ToolWorkspace({
                           onClick={
                             understandRequirement
                           }
-                          className="mt-3 inline-flex items-center justify-center gap-2 rounded-xl bg-brand-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-brand-700"
+                          className="mt-3 inline-flex items-center justify-center gap-2 rounded-xl bg-brand-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-brand-700 transition"
                         >
                           <Sparkles className="h-4 w-4" />
                           Understand Requirement
                         </button>
 
                         {requirementMessage && (
-                          <div className="mt-3 rounded-xl border border-brand-100 bg-white px-4 py-3 text-sm text-brand-700">
+                          <div className="mt-3 rounded-xl bg-white border border-brand-100 px-4 py-3 text-sm text-brand-700">
                             {
                               requirementMessage
                             }
@@ -2144,29 +1105,21 @@ export function ToolWorkspace({
                     )}
 
                     <div className="mt-5">
-                      <p className="mb-3 text-sm font-semibold text-ink-700">
+                      <p className="text-sm font-semibold text-ink-700 mb-3">
                         Options
                       </p>
 
                       {tool.options?.map(
-                        (
-                          option
-                        ) => (
+                        (option) => (
                           <OptionField
-                            key={
-                              option.key
-                            }
-                            opt={
-                              option
-                            }
+                            key={option.key}
+                            opt={option}
                             value={
                               options[
                                 option.key
                               ]
                             }
-                            onChange={(
-                              value
-                            ) =>
+                            onChange={(value) =>
                               updateOption(
                                 option.key,
                                 value
@@ -2178,15 +1131,10 @@ export function ToolWorkspace({
                     </div>
 
                     <button
-                      type="button"
                       onClick={() =>
                         void runConversion()
                       }
-                      disabled={
-                        stage ==
-                        'working'
-                      }
-                      className="btn-primary mt-2 w-full disabled:cursor-not-allowed disabled:opacity-60"
+                      className="btn-primary w-full mt-2"
                     >
                       <Sparkles className="h-4 w-4" />
                       Run Conversion
@@ -2194,172 +1142,108 @@ export function ToolWorkspace({
                   </>
                 )}
 
-                {/* TEXT / OPTION-ONLY */}
+                {(needsText ||
+                  needsOptionsOnly) &&
+                  tool.options?.map(
+                    (option) => (
+                      <OptionField
+                        key={option.key}
+                        opt={option}
+                        value={
+                          options[
+                            option.key
+                          ]
+                        }
+                        onChange={(value) =>
+                          updateOption(
+                            option.key,
+                            value
+                          )
+                        }
+                      />
+                    )
+                  )}
 
                 {(needsText ||
                   needsOptionsOnly) && (
-                  <>
-                    {tool.options?.map(
-                      (
-                        option
-                      ) => (
-                        <OptionField
-                          key={
-                            option.key
-                          }
-                          opt={
-                            option
-                          }
-                          value={
-                            options[
-                              option.key
-                            ]
-                          }
-                          onChange={(
-                            value
-                          ) =>
-                            updateOption(
-                              option.key,
-                              value
-                            )
-                          }
-                        />
-                      )
-                    )}
-
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void runConversion()
-                      }
-                      disabled={
-                        stage ==
-                        'working'
-                      }
-                      className="btn-primary mt-2 w-full disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      <Sparkles className="h-4 w-4" />
-                      {needsOptionsOnly
-                        ? 'Run Tool'
-                        : 'Run Conversion'}
-                    </button>
-                  </>
+                  <button
+                    onClick={() =>
+                      void runConversion()
+                    }
+                    className="btn-primary w-full mt-4"
+                  >
+                    <Sparkles className="h-4 w-4" />
+                    Run{' '}
+                    {needsOptionsOnly
+                      ? 'Tool'
+                      : 'Conversion'}
+                  </button>
                 )}
               </div>
             )}
 
             {/* WORKING */}
 
-            {stage ===
-              'working' && (
-              <div className="relative overflow-hidden p-8 text-center sm:p-12">
-                <div className="absolute inset-0 bg-gradient-to-br from-brand-50/70 via-white to-accent-50/60" />
-
-                <div className="relative mx-auto max-w-xl">
-                  <div className="conversion-glow relative mx-auto grid h-36 w-36 place-items-center rounded-full bg-white shadow-float ring-1 ring-brand-100">
-                    <div className="absolute inset-3 rounded-full border-2 border-brand-100" />
-
-                    <div className="conversion-orbit absolute inset-3 rounded-full border-2 border-transparent border-r-accent-500 border-t-brand-600" />
-
-                    <div className="grid h-20 w-20 place-items-center rounded-3xl bg-ink-950 text-white shadow-soft">
-                      <Loader2 className="h-9 w-9 animate-spin" />
-                    </div>
-                  </div>
-
-                  <p className="mt-7 font-display text-xl font-extrabold text-ink-900">
-                    Optimizing your conversion…
-                  </p>
-
-                  <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-ink-500">
-                    QuadraConverter is using the fastest available processing path for this file. Your document stays in the conversion pipeline until the output is verified.
-                  </p>
-
-                  <div className="premium-progress mt-7 h-2.5 rounded-full bg-ink-100">
-                    <div
-                      className="h-full rounded-full bg-gradient-to-r from-brand-600 via-brand-500 to-accent-500 transition-[width] duration-200"
-                      style={{
-                        width: `${Math.round(
-                          progress
-                        )}%`,
-                      }}
+            {stage === 'working' && (
+              <div className="p-8 sm:p-12 text-center">
+                <div className="relative w-32 h-32 mx-auto">
+                  <svg
+                    className="w-32 h-32 -rotate-90"
+                    viewBox="0 0 120 120"
+                  >
+                    <circle
+                      cx="60"
+                      cy="60"
+                      r="52"
+                      fill="none"
+                      stroke="#eceef2"
+                      strokeWidth="8"
                     />
-                  </div>
 
-                  <div className="mt-2 flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-ink-400">
-                    <span>
-                      Processing
-                    </span>
+                    <circle
+                      cx="60"
+                      cy="60"
+                      r="52"
+                      fill="none"
+                      stroke="#3478f6"
+                      strokeWidth="8"
+                      strokeLinecap="round"
+                      strokeDasharray={`${2 * Math.PI * 52}`}
+                      strokeDashoffset={`${
+                        2 *
+                        Math.PI *
+                        52 *
+                        (1 -
+                          progress /
+                            100)
+                      }`}
+                      className="transition-all duration-200"
+                    />
+                  </svg>
 
-                    <span>
-                      {Math.round(
-                        progress
-                      )}
-                      %
-                    </span>
-                  </div>
-
-                  <div className="mt-7 grid grid-cols-3 gap-2 text-left">
-                    {[
-                      [
-                        '01',
-                        'Reading',
-                        'File structure',
-                      ],
-                      [
-                        '02',
-                        'Converting',
-                        'Native engine',
-                      ],
-                      [
-                        '03',
-                        'Verifying',
-                        'Output quality',
-                      ],
-                    ].map(
-                      ([
-                        number,
-                        title,
-                        description,
-                      ]) => (
-                        <div
-                          key={
-                            number
-                          }
-                          className="rounded-2xl bg-white/80 p-3 ring-1 ring-ink-100"
-                        >
-                          <span className="text-[10px] font-extrabold text-brand-600">
-                            {
-                              number
-                            }
-                          </span>
-
-                          <p className="mt-1 text-xs font-bold text-ink-800">
-                            {
-                              title
-                            }
-                          </p>
-
-                          <p className="mt-0.5 text-[10px] text-ink-400">
-                            {
-                              description
-                            }
-                          </p>
-                        </div>
-                      )
-                    )}
+                  <div className="absolute inset-0 grid place-items-center">
+                    <Loader2 className="w-8 h-8 animate-spin text-brand-600" />
                   </div>
                 </div>
+
+                <p className="mt-6 font-display text-lg font-semibold text-ink-900">
+                  Converting…
+                </p>
+
+                <p className="text-sm text-ink-500 mt-1">
+                  {Math.round(progress)}%
+                  complete
+                </p>
               </div>
             )}
 
             {/* DONE */}
 
-            {stage ===
-              'done' && (
+            {stage === 'done' && (
               <div className="p-6 sm:p-8">
-                <div className="mb-6 flex items-center gap-3">
-                  <div className="grid h-12 w-12 place-items-center rounded-2xl bg-accent-100 text-accent-600">
-                    <CheckCircle2 className="h-6 w-6" />
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="w-12 h-12 rounded-2xl bg-accent-100 text-accent-600 grid place-items-center">
+                    <CheckCircle2 className="w-6 h-6" />
                   </div>
 
                   <div>
@@ -2368,8 +1252,7 @@ export function ToolWorkspace({
                     </p>
 
                     <p className="text-sm text-ink-500">
-                      {results.length}{' '}
-                      file
+                      {results.length} file
                       {results.length >
                       1
                         ? 's'
@@ -2382,20 +1265,17 @@ export function ToolWorkspace({
 
                 <div className="space-y-3">
                   {results.map(
-                    (
-                      result,
-                      index
-                    ) => (
+                    (result, index) => (
                       <div
                         key={`${result.filename}-${index}`}
-                        className="rounded-2xl border border-ink-100 bg-ink-50 p-4"
+                        className="p-4 rounded-2xl bg-ink-50 border border-ink-100"
                       >
-                        <div className="mb-3 flex items-center justify-between gap-4">
-                          <div className="flex min-w-0 items-center gap-3">
-                            <FileCheck2 className="h-5 w-5 shrink-0 text-brand-600" />
+                        <div className="flex items-center justify-between gap-4 mb-3">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <FileCheck2 className="w-5 h-5 text-brand-600 shrink-0" />
 
                             <div className="min-w-0">
-                              <p className="truncate text-sm font-semibold text-ink-900">
+                              <p className="text-sm font-semibold text-ink-900 truncate">
                                 {
                                   result.filename
                                 }
@@ -2403,8 +1283,7 @@ export function ToolWorkspace({
 
                               <p className="text-xs text-ink-500">
                                 {(
-                                  result
-                                    .blob
+                                  result.blob
                                     .size /
                                   1024
                                 ).toFixed(
@@ -2421,7 +1300,6 @@ export function ToolWorkspace({
 
                         <div className="flex flex-wrap gap-2">
                           <button
-                            type="button"
                             onClick={() =>
                               handleDownload(
                                 result
@@ -2434,7 +1312,6 @@ export function ToolWorkspace({
                           </button>
 
                           <button
-                            type="button"
                             onClick={() =>
                               handlePreview(
                                 result
@@ -2447,7 +1324,6 @@ export function ToolWorkspace({
                           </button>
 
                           <button
-                            type="button"
                             onClick={() =>
                               handleShare(
                                 result,
@@ -2461,7 +1337,6 @@ export function ToolWorkspace({
                           </button>
 
                           <button
-                            type="button"
                             onClick={() =>
                               handleShare(
                                 result,
@@ -2479,14 +1354,12 @@ export function ToolWorkspace({
                   )}
                 </div>
 
-                {results.length >
-                  1 && (
+                {results.length > 1 && (
                   <button
-                    type="button"
                     onClick={
                       handleDownloadAll
                     }
-                    className="btn-secondary mt-4 w-full"
+                    className="btn-secondary w-full mt-4"
                   >
                     <Download className="h-4 w-4" />
                     Download All
@@ -2513,16 +1386,13 @@ export function ToolWorkspace({
                     'text/'
                   ) && (
                     <PreviewText
-                      result={
-                        results[0]
-                      }
+                      result={results[0]}
                     />
                   )}
 
                 <button
-                  type="button"
                   onClick={reset}
-                  className="btn-ghost mt-4 w-full"
+                  className="btn-ghost w-full mt-4"
                 >
                   <RefreshCw className="h-4 w-4" />
                   Convert Another
@@ -2532,24 +1402,21 @@ export function ToolWorkspace({
 
             {/* ERROR */}
 
-            {stage ===
-              'error' && (
-              <div className="p-8 text-center sm:p-12">
-                <div className="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-err-50 text-err-500">
-                  <AlertCircle className="h-8 w-8" />
+            {stage === 'error' && (
+              <div className="p-8 sm:p-12 text-center">
+                <div className="w-16 h-16 rounded-2xl bg-err-50 text-err-500 grid place-items-center mx-auto">
+                  <AlertCircle className="w-8 h-8" />
                 </div>
 
                 <p className="mt-4 font-display text-lg font-bold text-ink-900">
                   Conversion Failed
                 </p>
 
-                <p className="mx-auto mt-1 max-w-md text-sm text-err-600">
-                  {error ||
-                    'Something went wrong while converting your file.'}
+                <p className="text-sm text-err-600 mt-1 max-w-md mx-auto">
+                  {error}
                 </p>
 
                 <button
-                  type="button"
                   onClick={reset}
                   className="btn-primary mt-6"
                 >
@@ -2564,9 +1431,9 @@ export function ToolWorkspace({
         {/* SIDEBAR */}
 
         <aside className="space-y-4">
-          <div className="rounded-2xl border border-ink-200 bg-white p-5">
-            <h3 className="mb-3 flex items-center gap-2 font-display font-bold text-ink-900">
-              <Settings2 className="h-4 w-4 text-brand-600" />
+          <div className="bg-white rounded-2xl border border-ink-200 p-5">
+            <h3 className="font-display font-bold text-ink-900 mb-3 flex items-center gap-2">
+              <Settings2 className="w-4 h-4 text-brand-600" />
               How it works
             </h3>
 
@@ -2575,7 +1442,7 @@ export function ToolWorkspace({
                 needsFileOptions) && (
                 <>
                   <li className="flex gap-3 text-sm text-ink-600">
-                    <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-brand-100 text-xs font-bold text-brand-700">
+                    <span className="w-6 h-6 rounded-full bg-brand-100 text-brand-700 grid place-items-center text-xs font-bold shrink-0">
                       1
                     </span>
 
@@ -2587,13 +1454,13 @@ export function ToolWorkspace({
                   </li>
 
                   <li className="flex gap-3 text-sm text-ink-600">
-                    <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-brand-100 text-xs font-bold text-brand-700">
+                    <span className="w-6 h-6 rounded-full bg-brand-100 text-brand-700 grid place-items-center text-xs font-bold shrink-0">
                       2
                     </span>
 
                     {needsFileOptions
                       ? 'Set options and click Run'
-                      : 'Conversion runs automatically'}
+                      : 'Conversion runs instantly in your browser'}
                   </li>
                 </>
               )}
@@ -2602,7 +1469,7 @@ export function ToolWorkspace({
                 needsOptionsOnly) && (
                 <>
                   <li className="flex gap-3 text-sm text-ink-600">
-                    <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-brand-100 text-xs font-bold text-brand-700">
+                    <span className="w-6 h-6 rounded-full bg-brand-100 text-brand-700 grid place-items-center text-xs font-bold shrink-0">
                       1
                     </span>
 
@@ -2612,7 +1479,7 @@ export function ToolWorkspace({
                   </li>
 
                   <li className="flex gap-3 text-sm text-ink-600">
-                    <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-brand-100 text-xs font-bold text-brand-700">
+                    <span className="w-6 h-6 rounded-full bg-brand-100 text-brand-700 grid place-items-center text-xs font-bold shrink-0">
                       2
                     </span>
 
@@ -2626,18 +1493,18 @@ export function ToolWorkspace({
               )}
 
               <li className="flex gap-3 text-sm text-ink-600">
-                <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-accent-100 text-xs font-bold text-accent-700">
+                <span className="w-6 h-6 rounded-full bg-accent-100 text-accent-700 grid place-items-center text-xs font-bold shrink-0">
                   3
                 </span>
 
-                Download, preview,
-                or share your result
+                Download, preview, or
+                share your result
               </li>
             </ol>
           </div>
 
-          <div className="rounded-2xl border border-ink-200 bg-white p-5">
-            <h3 className="mb-3 font-display font-bold text-ink-900">
+          <div className="bg-white rounded-2xl border border-ink-200 p-5">
+            <h3 className="font-display font-bold text-ink-900 mb-3">
               Tool Info
             </h3>
 
@@ -2647,7 +1514,7 @@ export function ToolWorkspace({
                   Category
                 </dt>
 
-                <dd className="font-semibold capitalize text-ink-800">
+                <dd className="font-semibold text-ink-800 capitalize">
                   {tool.category}
                 </dd>
               </div>
@@ -2657,7 +1524,7 @@ export function ToolWorkspace({
                   Output
                 </dt>
 
-                <dd className="font-semibold uppercase text-ink-800">
+                <dd className="font-semibold text-ink-800 uppercase">
                   {tool.outputFormat}
                 </dd>
               </div>
@@ -2667,16 +1534,16 @@ export function ToolWorkspace({
                   Input
                 </dt>
 
-                <dd className="font-semibold capitalize text-ink-800">
+                <dd className="font-semibold text-ink-800 capitalize">
                   {tool.inputType}
                 </dd>
               </div>
             </dl>
           </div>
 
-          <div className="rounded-2xl border border-brand-100 bg-gradient-to-br from-brand-50 to-accent-50 p-5">
-            <div className="mb-2 flex items-center gap-2 text-brand-700">
-              <ShieldCheck className="h-4 w-4" />
+          <div className="bg-gradient-to-br from-brand-50 to-accent-50 rounded-2xl border border-brand-100 p-5">
+            <div className="flex items-center gap-2 text-brand-700 mb-2">
+              <ShieldCheck className="w-4 h-4" />
 
               <span className="text-sm font-bold">
                 Privacy Guaranteed
@@ -2692,9 +1559,9 @@ export function ToolWorkspace({
             </p>
           </div>
 
-          <div className="rounded-2xl border border-ink-200 bg-white p-5">
-            <div className="mb-3 flex items-center gap-2">
-              <Star className="h-4 w-4 fill-warn-500 text-warn-500" />
+          <div className="bg-white rounded-2xl border border-ink-200 p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <Star className="w-4 h-4 text-warn-500 fill-warn-500" />
 
               <span className="text-sm font-bold text-ink-900">
                 Popular Tool
@@ -2702,7 +1569,7 @@ export function ToolWorkspace({
             </div>
 
             <div className="flex items-center gap-3 text-xs text-ink-500">
-              <Clock className="h-3.5 w-3.5" />
+              <Clock className="w-3.5 h-3.5" />
               Instant results
             </div>
           </div>
@@ -2716,40 +1583,25 @@ export function ToolWorkspace({
           result={emailResult}
           toolName={tool.name}
           email={emailAddress}
-          setEmail={
-            setEmailAddress
-          }
-          sending={
-            emailSending
-          }
-          status={
-            emailStatus
-          }
+          setEmail={setEmailAddress}
+          sending={emailSending}
+          status={emailStatus}
           onClose={() => {
             if (!emailSending) {
-              setEmailResult(
-                null
-              );
-              setEmailStatus(
-                null
-              );
+              setEmailResult(null);
+              setEmailStatus(null);
             }
           }}
           onSend={async () => {
-            if (
-              !emailAddress.trim()
-            ) {
+            if (!emailAddress.trim()) {
               setEmailStatus(
                 'Please enter an email address.'
               );
-
               return;
             }
 
             setEmailSending(true);
-            setEmailStatus(
-              null
-            );
+            setEmailStatus(null);
 
             try {
               const apiUrl =
@@ -2804,7 +1656,7 @@ export function ToolWorkspace({
                 data =
                   await response.json();
               } catch {
-                // Non-JSON response.
+                // Response wasn't JSON.
               }
 
               if (!response.ok) {
@@ -2825,9 +1677,7 @@ export function ToolWorkspace({
                   : 'Email could not be sent.'
               );
             } finally {
-              setEmailSending(
-                false
-              );
+              setEmailSending(false);
             }
           }}
         />
@@ -2859,17 +1709,13 @@ function PreviewText({
     result.blob
       .text()
       .then((value) => {
-        if (!active) {
-          return;
-        }
+        if (!active) return;
 
         setText(value);
         setLoading(false);
       })
       .catch(() => {
-        if (!active) {
-          return;
-        }
+        if (!active) return;
 
         setText(
           'Unable to preview this file.'
@@ -2884,8 +1730,8 @@ function PreviewText({
   }, [result]);
 
   return (
-    <div className="mt-6 rounded-2xl border border-ink-200 bg-white p-4">
-      <p className="mb-2 flex items-center gap-2 text-sm font-semibold text-ink-700">
+    <div className="mt-6 p-4 rounded-2xl bg-white border border-ink-200">
+      <p className="text-sm font-semibold text-ink-700 mb-2 flex items-center gap-2">
         <Eye className="h-4 w-4" />
         Preview
       </p>
@@ -2895,12 +1741,8 @@ function PreviewText({
           Loading…
         </p>
       ) : (
-        <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-xl bg-ink-50 p-3 font-mono text-xs text-ink-700">
-          {text.substring(
-            0,
-            5000
-          )}
-
+        <pre className="text-xs text-ink-700 max-h-64 overflow-auto whitespace-pre-wrap font-mono bg-ink-50 p-3 rounded-xl">
+          {text.substring(0, 5000)}
           {text.length > 5000
             ? '\n\n… (truncated)'
             : ''}
@@ -2922,80 +1764,52 @@ function OptionField({
   onChange,
 }: {
   opt: ToolOption;
-
-  value:
-    | string
-    | number
-    | boolean;
-
+  value: string | number | boolean;
   onChange: (
-    value:
-      | string
-      | number
-      | boolean
+    value: string | number | boolean
   ) => void;
 }) {
-  if (
-    opt.type === 'text'
-  ) {
+  if (opt.type === 'text') {
     return (
       <div className="mb-4">
-        <label className="mb-1.5 block text-sm font-medium text-ink-700">
+        <label className="block text-sm font-medium text-ink-700 mb-1.5">
           {opt.label}
         </label>
 
         <textarea
-          value={String(
-            value ?? ''
-          )}
+          value={String(value || '')}
           onChange={(event) =>
-            onChange(
-              event.target.value
-            )
+            onChange(event.target.value)
           }
-          placeholder={
-            opt.placeholder
-          }
+          placeholder={opt.placeholder}
           rows={6}
-          className="w-full resize-y rounded-xl border border-ink-200 px-4 py-3 font-mono text-sm text-ink-900 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+          className="w-full rounded-xl border border-ink-200 px-4 py-3 text-sm text-ink-900 focus:border-brand-500 focus:ring-2 focus:ring-brand-100 outline-none transition resize-y font-mono"
         />
       </div>
     );
   }
 
-  if (
-    opt.type === 'select'
-  ) {
+  if (opt.type === 'select') {
     return (
       <div className="mb-4">
-        <label className="mb-1.5 block text-sm font-medium text-ink-700">
+        <label className="block text-sm font-medium text-ink-700 mb-1.5">
           {opt.label}
         </label>
 
         <select
-          value={String(
-            value ?? ''
-          )}
+          value={String(value)}
           onChange={(event) =>
-            onChange(
-              event.target.value
-            )
+            onChange(event.target.value)
           }
-          className="w-full rounded-xl border border-ink-200 bg-white px-4 py-3 text-sm text-ink-900 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+          className="w-full rounded-xl border border-ink-200 px-4 py-3 text-sm text-ink-900 focus:border-brand-500 focus:ring-2 focus:ring-brand-100 outline-none transition bg-white"
         >
           {opt.choices?.map(
             (choice) => (
               <option
-                key={
-                  choice.value
-                }
-                value={
-                  choice.value
-                }
+                key={choice.value}
+                value={choice.value}
               >
-                {
-                  choice.label
-                }
+                {choice.label}
               </option>
             )
           )}
@@ -3004,69 +1818,48 @@ function OptionField({
     );
   }
 
-  if (
-    opt.type === 'number'
-  ) {
+  if (opt.type === 'number') {
     return (
       <div className="mb-4">
-        <label className="mb-1.5 block text-sm font-medium text-ink-700">
+        <label className="block text-sm font-medium text-ink-700 mb-1.5">
           {opt.label}
         </label>
 
         <input
           type="number"
-          value={Number(
-            value ?? 0
-          )}
+          value={Number(value)}
           onChange={(event) =>
             onChange(
-              Number(
-                event.target
-                  .value
-              )
+              Number(event.target.value)
             )
           }
           min={opt.min}
           max={opt.max}
           step={opt.step}
-          placeholder={
-            opt.placeholder
-          }
-          className="w-full rounded-xl border border-ink-200 px-4 py-3 text-sm text-ink-900 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+          placeholder={opt.placeholder}
+          className="w-full rounded-xl border border-ink-200 px-4 py-3 text-sm text-ink-900 focus:border-brand-500 focus:ring-2 focus:ring-brand-100 outline-none transition"
         />
       </div>
     );
   }
 
-  if (
-    opt.type === 'range'
-  ) {
+  if (opt.type === 'range') {
     return (
       <div className="mb-4">
-        <label className="mb-1.5 flex justify-between text-sm font-medium text-ink-700">
-          <span>
-            {opt.label}
-          </span>
+        <label className="flex justify-between text-sm font-medium text-ink-700 mb-1.5">
+          <span>{opt.label}</span>
 
-          <span className="font-bold text-brand-600">
-            {Number(
-              value ?? 0
-            )}
-            %
+          <span className="text-brand-600 font-bold">
+            {value}%
           </span>
         </label>
 
         <input
           type="range"
-          value={Number(
-            value ?? 0
-          )}
+          value={Number(value)}
           onChange={(event) =>
             onChange(
-              Number(
-                event.target
-                  .value
-              )
+              Number(event.target.value)
             )
           }
           min={opt.min}
@@ -3078,24 +1871,18 @@ function OptionField({
     );
   }
 
-  if (
-    opt.type ===
-    'checkbox'
-  ) {
+  if (opt.type === 'checkbox') {
     return (
-      <label className="mb-4 flex cursor-pointer items-center gap-3">
+      <label className="flex items-center gap-3 mb-4 cursor-pointer">
         <input
           type="checkbox"
-          checked={Boolean(
-            value
-          )}
+          checked={Boolean(value)}
           onChange={(event) =>
             onChange(
-              event.target
-                .checked
+              event.target.checked
             )
           }
-          className="h-5 w-5 rounded accent-brand-600"
+          className="w-5 h-5 rounded accent-brand-600"
         />
 
         <span className="text-sm font-medium text-ink-700">
@@ -3143,27 +1930,20 @@ function LivePreview({
     result.mimeType.toLowerCase();
 
   const isImage =
-    mime.startsWith(
-      'image/'
-    );
+    mime.startsWith('image/');
 
   const isPdf =
-    mime ===
-    'application/pdf';
+    mime === 'application/pdf';
 
   const isText =
-    mime.startsWith(
-      'text/'
-    ) ||
+    mime.startsWith('text/') ||
     mime.includes('json') ||
-    mime.includes(
-      'javascript'
-    ) ||
+    mime.includes('javascript') ||
     mime.includes('xml');
 
   return (
-    <div className="mt-6 overflow-hidden rounded-2xl border border-ink-200 bg-white">
-      <div className="flex items-center justify-between gap-3 border-b border-ink-100 px-4 py-3">
+    <div className="mt-6 rounded-2xl border border-ink-200 bg-white overflow-hidden">
+      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-ink-100">
         <div className="flex items-center gap-2">
           <Eye className="h-4 w-4 text-brand-600" />
 
@@ -3172,7 +1952,7 @@ function LivePreview({
               Live Preview
             </p>
 
-            <p className="max-w-[280px] truncate text-xs text-ink-500">
+            <p className="text-xs text-ink-500 truncate max-w-[280px]">
               {result.filename}
             </p>
           </div>
@@ -3180,58 +1960,50 @@ function LivePreview({
 
         <button
           type="button"
-          onClick={
-            onClose
-          }
+          onClick={onClose}
           className="text-xs font-semibold text-ink-500 hover:text-ink-900"
         >
           Close
         </button>
       </div>
 
-      <div className="bg-ink-50 p-4">
+      <div className="p-4 bg-ink-50">
         {!url && (
-          <div className="grid h-64 place-items-center">
+          <div className="h-64 grid place-items-center">
             <Loader2 className="h-6 w-6 animate-spin text-brand-600" />
           </div>
         )}
 
-        {url &&
-          isImage && (
-            <div className="flex max-h-[650px] min-h-[300px] items-center justify-center overflow-auto rounded-xl bg-white p-4">
-              <img
-                src={url}
-                alt={
-                  result.filename
-                }
-                className="max-h-[600px] max-w-full rounded-lg object-contain"
-              />
-            </div>
-          )}
+        {url && isImage && (
+          <div className="min-h-[300px] max-h-[650px] flex items-center justify-center overflow-auto rounded-xl bg-white p-4">
+            <img
+              src={url}
+              alt={result.filename}
+              className="max-w-full max-h-[600px] object-contain rounded-lg"
+            />
+          </div>
+        )}
 
         {url && isPdf && (
           <iframe
             src={url}
             title={`Preview ${result.filename}`}
-            className="h-[650px] w-full rounded-xl border border-ink-200 bg-white"
+            className="w-full h-[650px] rounded-xl border border-ink-200 bg-white"
           />
         )}
 
-        {url &&
-          isText && (
-            <TextBlobPreview
-              result={
-                result
-              }
-            />
-          )}
+        {url && isText && (
+          <TextBlobPreview
+            result={result}
+          />
+        )}
 
         {url &&
           !isImage &&
           !isPdf &&
           !isText && (
             <div className="rounded-xl bg-white p-8 text-center">
-              <FileCheck2 className="mx-auto h-10 w-10 text-brand-600" />
+              <FileCheck2 className="h-10 w-10 mx-auto text-brand-600" />
 
               <p className="mt-3 text-sm font-semibold text-ink-900">
                 Preview not available
@@ -3239,36 +2011,12 @@ function LivePreview({
               </p>
 
               <button
-                type="button"
-                onClick={() => {
-                  const objectUrl =
-                    URL.createObjectURL(
-                      result.blob
-                    );
-
-                  const anchor =
-                    document.createElement(
-                      'a'
-                    );
-
-                  anchor.href =
-                    objectUrl;
-
-                  anchor.download =
-                    result.filename;
-
-                  document.body.appendChild(
-                    anchor
-                  );
-
-                  anchor.click();
-
-                  anchor.remove();
-
-                  URL.revokeObjectURL(
-                    objectUrl
-                  );
-                }}
+                onClick={() =>
+                  Converters.downloadBlob(
+                    result.blob,
+                    result.filename
+                  )
+                }
                 className="btn-primary mt-4"
               >
                 <Download className="h-4 w-4" />
@@ -3304,17 +2052,13 @@ function TextBlobPreview({
     result.blob
       .text()
       .then((value) => {
-        if (!active) {
-          return;
-        }
+        if (!active) return;
 
         setText(value);
         setLoading(false);
       })
       .catch(() => {
-        if (!active) {
-          return;
-        }
+        if (!active) return;
 
         setText(
           'Unable to preview this file.'
@@ -3330,16 +2074,15 @@ function TextBlobPreview({
 
   if (loading) {
     return (
-      <div className="grid h-64 place-items-center">
+      <div className="h-64 grid place-items-center">
         <Loader2 className="h-6 w-6 animate-spin text-brand-600" />
       </div>
     );
   }
 
   return (
-    <pre className="max-h-[600px] overflow-auto whitespace-pre-wrap rounded-xl border border-ink-200 bg-white p-4 font-mono text-xs text-ink-700">
-      {text.length >
-      20000
+    <pre className="bg-white rounded-xl border border-ink-200 p-4 max-h-[600px] overflow-auto text-xs text-ink-700 whitespace-pre-wrap font-mono">
+      {text.length > 20000
         ? `${text.substring(
             0,
             20000
@@ -3368,9 +2111,7 @@ function EmailShareDialog({
   result: Converters.ConvertResult;
   toolName: string;
   email: string;
-  setEmail: (
-    value: string
-  ) => void;
+  setEmail: (value: string) => void;
   sending: boolean;
   status: string | null;
   onClose: () => void;
@@ -3381,29 +2122,26 @@ function EmailShareDialog({
     'Email sent successfully.';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-md overflow-hidden rounded-3xl border border-ink-200 bg-white shadow-2xl">
-        <div className="border-b border-ink-100 px-6 py-5">
+    <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl border border-ink-200 overflow-hidden">
+        <div className="px-6 py-5 border-b border-ink-100">
           <div className="flex items-center justify-between">
             <div>
               <h2 className="font-display text-lg font-bold text-ink-900">
                 Email Converted File
               </h2>
 
-              <p className="mt-1 text-xs text-ink-500">
-                Send the converted file directly to an email address.
+              <p className="text-xs text-ink-500 mt-1">
+                Send the converted file
+                directly to an email
+                address.
               </p>
             </div>
 
             <button
-              type="button"
-              onClick={
-                onClose
-              }
-              disabled={
-                sending
-              }
-              className="text-lg text-ink-400 hover:text-ink-900 disabled:opacity-50"
+              onClick={onClose}
+              disabled={sending}
+              className="text-ink-400 hover:text-ink-900 text-lg"
             >
               ×
             </button>
@@ -3411,25 +2149,21 @@ function EmailShareDialog({
         </div>
 
         <div className="p-6">
-          <div className="mb-4 rounded-xl border border-ink-100 bg-ink-50 p-3">
-            <p className="truncate text-sm font-semibold text-ink-900">
+          <div className="rounded-xl bg-ink-50 border border-ink-100 p-3 mb-4">
+            <p className="text-sm font-semibold text-ink-900 truncate">
               {result.filename}
             </p>
 
-            <p className="mt-1 text-xs text-ink-500">
+            <p className="text-xs text-ink-500 mt-1">
               {(
-                result.blob
-                  .size /
+                result.blob.size /
                 1024
-              ).toFixed(
-                1
-              )}{' '}
-              KB ·{' '}
-              {toolName}
+              ).toFixed(1)}{' '}
+              KB · {toolName}
             </p>
           </div>
 
-          <label className="mb-2 block text-sm font-semibold text-ink-700">
+          <label className="block text-sm font-semibold text-ink-700 mb-2">
             Recipient Email
           </label>
 
@@ -3438,25 +2172,26 @@ function EmailShareDialog({
             value={email}
             onChange={(event) =>
               setEmail(
-                event.target
-                  .value
+                event.target.value
               )
             }
             placeholder="recipient@example.com"
             disabled={
-              sending ||
-              success
+              sending || success
             }
             className="w-full rounded-xl border border-ink-200 px-4 py-3 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100 disabled:bg-ink-50"
           />
 
           {status && (
             <div
-              className={`mt-3 rounded-xl px-4 py-3 text-sm ${
-                success
-                  ? 'bg-accent-50 text-accent-700'
-                  : 'bg-err-50 text-err-600'
-              }`}
+              className={`
+                mt-3 rounded-xl px-4 py-3 text-sm
+                ${
+                  success
+                    ? 'bg-accent-50 text-accent-700'
+                    : 'bg-err-50 text-err-600'
+                }
+              `}
             >
               {status}
             </div>
@@ -3464,14 +2199,9 @@ function EmailShareDialog({
 
           {!success && (
             <button
-              type="button"
-              onClick={
-                onSend
-              }
-              disabled={
-                sending
-              }
-              className="btn-primary mt-5 w-full disabled:opacity-60"
+              onClick={onSend}
+              disabled={sending}
+              className="btn-primary w-full mt-5"
             >
               {sending ? (
                 <>
@@ -3489,11 +2219,8 @@ function EmailShareDialog({
 
           {success && (
             <button
-              type="button"
-              onClick={
-                onClose
-              }
-              className="btn-primary mt-5 w-full"
+              onClick={onClose}
+              className="btn-primary w-full mt-5"
             >
               Done
             </button>
