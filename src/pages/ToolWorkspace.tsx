@@ -2461,19 +2461,7 @@ export function ToolWorkspace({
                             Preview
                           </button>
 
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleShare(
-                                result,
-                                'email'
-                              )
-                            }
-                            className="btn-ghost text-sm"
-                          >
-                            <Mail className="h-4 w-4" />
-                            Email
-                          </button>
+                        
 
                           <button
                             type="button"
@@ -2486,7 +2474,7 @@ export function ToolWorkspace({
                             className="btn-ghost text-sm"
                           >
                             <Share2 className="h-4 w-4" />
-                            WhatsApp
+                            Share
                           </button>
                         </div>
                       </div>
