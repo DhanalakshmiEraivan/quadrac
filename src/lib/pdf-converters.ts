@@ -1,5 +1,6 @@
 import jsPDF from 'jspdf';
 import { PDFDocument, degrees, rgb, StandardFonts } from 'pdf-lib';
+import * as pdfjsLib from 'pdfjs-dist/build/pdf.mjs';
 
 export interface ConvertResult {
   blob: Blob;
@@ -64,17 +65,17 @@ async function safelyDestroyPdf(pdf: any): Promise<void> {
 }
 async function loadPdfjs(): Promise<PDFJSLib> {
   if (typeof window === 'undefined') {
-    throw new Error('PDF.js browser conversion is only available in a browser.');
+    throw new Error(
+      'PDF.js browser conversion is only available in a browser.',
+    );
   }
 
-  const pdfjs = await import('pdfjs-dist/build/pdf.mjs');
-
-  if (pdfjs.GlobalWorkerOptions) {
-    pdfjs.GlobalWorkerOptions.workerSrc =
+  if (pdfjsLib.GlobalWorkerOptions) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
       `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.mjs`;
   }
 
-  return pdfjs;
+  return pdfjsLib;
 }
 
 async function loadTesseract(): Promise<TesseractModule> {
