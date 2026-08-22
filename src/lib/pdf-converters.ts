@@ -2086,7 +2086,209 @@ export async function flattenPDF(
     mimeType: 'application/pdf',
   };
 }
+// src/lib/pdf-converters.ts
 
+// ADD THESE FUNCTIONS BEFORE THE "Helpers" SECTION
+
+// ─── Images to PDF ──────────────────────────────────────────
+
+export async function imagesToPDF(
+  files: File[],
+): Promise<ConvertResult> {
+  return scanToPDF(files);
+}
+
+// ─── Text to PDF ────────────────────────────────────────────
+
+export async function textToPDF(
+  text: string,
+  filename: string = 'text-to-pdf.pdf',
+): Promise<ConvertResult> {
+  const value = String(text ?? '').trim();
+
+  if (!value) {
+    throw new Error('Please enter some text.');
+  }
+
+  const pdf = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4',
+  });
+
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
+
+  const marginLeft = 15;
+  const marginRight = 15;
+  const marginTop = 20;
+  const marginBottom = 20;
+
+  const usableWidth =
+    pageWidth - marginLeft - marginRight;
+
+  const lineHeight = 7;
+
+  const lines = pdf.splitTextToSize(
+    value,
+    usableWidth,
+  );
+
+  let y = marginTop;
+
+  pdf.setFont('helvetica', 'normal');
+  pdf.setFontSize(11);
+
+  for (const line of lines) {
+    if (y > pageHeight - marginBottom) {
+      pdf.addPage();
+      y = marginTop;
+    }
+
+    pdf.text(String(line), marginLeft, y);
+    y += lineHeight;
+  }
+
+  const baseName =
+    String(filename || 'text-to-pdf')
+      .replace(/\.[^.]+$/, '')
+      .trim() || 'text-to-pdf';
+
+  return {
+    blob: pdf.output('blob'),
+    filename: `${baseName}.pdf`,
+    mimeType: 'application/pdf',
+  };
+}
+
+// ─── HTML to PDF ────────────────────────────────────────────
+
+export async function htmlToPDF(
+  html: string,
+  filename: string = 'html-to-pdf.pdf',
+): Promise<ConvertResult> {
+  const value = String(html ?? '').trim();
+
+  if (!value) {
+    throw new Error('HTML content is empty.');
+  }
+
+  const { default: html2canvas } =
+    await import('html2canvas');
+
+  const wrapper = document.createElement('div');
+
+  wrapper.style.position = 'fixed';
+  wrapper.style.left = '-100000px';
+  wrapper.style.top = '0';
+  wrapper.style.width = '794px';
+  wrapper.style.minHeight = '1123px';
+  wrapper.style.background = '#ffffff';
+  wrapper.style.color = '#000000';
+  wrapper.style.padding = '0';
+  wrapper.style.margin = '0';
+  wrapper.style.zIndex = '-999999';
+  wrapper.style.overflow = 'visible';
+
+  wrapper.innerHTML = value;
+
+  document.body.appendChild(wrapper);
+
+  try {
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => resolve());
+    });
+
+    if (document.fonts?.ready) {
+      await document.fonts.ready;
+    }
+
+    const canvas = await html2canvas(wrapper, {
+      backgroundColor: '#ffffff',
+      scale: Math.min(
+        2,
+        Math.max(1, window.devicePixelRatio || 1),
+      ),
+      useCORS: true,
+      allowTaint: false,
+      logging: false,
+      windowWidth: 794,
+      imageTimeout: 30000,
+    });
+
+    if (!canvas.width || !canvas.height) {
+      throw new Error(
+        'Could not render the HTML content.',
+      );
+    }
+
+    const pdf = new jsPDF({
+      orientation:
+        canvas.width > canvas.height
+          ? 'landscape'
+          : 'portrait',
+      unit: 'pt',
+      format: 'a4',
+    });
+
+    const pageWidth =
+      pdf.internal.pageSize.getWidth();
+
+    const pageHeight =
+      pdf.internal.pageSize.getHeight();
+
+    const imageWidth = pageWidth;
+
+    const imageHeight =
+      (canvas.height * imageWidth) /
+      canvas.width;
+
+    let remainingHeight = imageHeight;
+    let position = 0;
+    let pageNumber = 0;
+
+    while (remainingHeight > 0) {
+      if (pageNumber > 0) {
+        pdf.addPage();
+      }
+
+      pdf.addImage(
+        canvas.toDataURL('image/jpeg', 0.95),
+        'JPEG',
+        0,
+        position,
+        imageWidth,
+        imageHeight,
+        undefined,
+        'FAST',
+      );
+
+      remainingHeight -= pageHeight;
+
+      position -= pageHeight;
+      pageNumber += 1;
+
+      if (pageNumber > 100) {
+        throw new Error(
+          'HTML content is too large to convert safely.',
+        );
+      }
+    }
+
+    const baseName =
+      String(filename || 'html-to-pdf')
+        .replace(/\.[^.]+$/, '')
+        .trim() || 'html-to-pdf';
+
+    return {
+      blob: pdf.output('blob'),
+      filename: `${baseName}.pdf`,
+      mimeType: 'application/pdf',
+    };
+  } finally {
+    wrapper.remove();
+  }
+}
 // ─── Helpers ────────────────────────────────────────────────
 
 function parsePageRange(
