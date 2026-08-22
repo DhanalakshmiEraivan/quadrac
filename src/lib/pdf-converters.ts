@@ -49,6 +49,19 @@ async function fileToText(file: File): Promise<string> {
  * If your installed pdfjs-dist version is different, change PDFJS_VERSION
  * to the same version in package.json.
  */
+// src/lib/pdf-converters.ts
+
+// ADD THIS HELPER near the top of the file, after loadPdfjs()
+
+async function safelyDestroyPdf(pdf: any): Promise<void> {
+  try {
+    if (pdf && typeof pdf.destroy === 'function') {
+      await pdf.destroy();
+    }
+  } catch {
+    // PDF.js cleanup errors must not fail an otherwise successful conversion.
+  }
+}
 async function loadPdfjs(): Promise<PDFJSLib> {
   if (typeof window === 'undefined') {
     throw new Error('PDF.js browser conversion is only available in a browser.');
