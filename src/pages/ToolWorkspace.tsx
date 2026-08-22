@@ -2464,18 +2464,15 @@ export function ToolWorkspace({
                         
 
                           <button
-                            type="button"
-                            onClick={() =>
-                              handleShare(
-                                result,
-                                'whatsapp'
-                              )
-                            }
-                            className="btn-ghost text-sm"
-                          >
-                            <Share2 className="h-4 w-4" />
-                            Share
-                          </button>
+  type="button"
+  onClick={() =>
+    handleShare(result, "whatsapp")
+  }
+  className="btn-ghost text-sm"
+>
+  <Share2 className="h-4 w-4" />
+  Share
+</button>
                         </div>
                       </div>
                     )
@@ -2713,129 +2710,6 @@ export function ToolWorkspace({
       </div>
 
       {/* EMAIL DIALOG */}
-
-      {emailResult && (
-        <EmailShareDialog
-          result={emailResult}
-          toolName={tool.name}
-          email={emailAddress}
-          setEmail={
-            setEmailAddress
-          }
-          sending={
-            emailSending
-          }
-          status={
-            emailStatus
-          }
-          onClose={() => {
-            if (!emailSending) {
-              setEmailResult(
-                null
-              );
-              setEmailStatus(
-                null
-              );
-            }
-          }}
-          onSend={async () => {
-            if (
-              !emailAddress.trim()
-            ) {
-              setEmailStatus(
-                'Please enter an email address.'
-              );
-
-              return;
-            }
-
-            setEmailSending(true);
-            setEmailStatus(
-              null
-            );
-
-            try {
-              const apiUrl =
-  import.meta.env.VITE_CONVERTER_API_URL ||
-  "http://localhost:8000";
-
-if (!apiUrl) {
-  throw new Error("Backend URL is missing.");
-}
-
-              const formData =
-                new FormData();
-
-              formData.append(
-                'file',
-                emailResult.blob,
-                emailResult.filename
-              );
-
-              formData.append(
-                'to',
-                emailAddress.trim()
-              );
-
-              formData.append(
-                'subject',
-                `Converted file: ${emailResult.filename}`
-              );
-
-              formData.append(
-                'tool',
-                tool.name
-              );
-
-              const response =
-                await fetch(
-                  `${apiUrl}/send-email`,
-                  {
-                    method: 'POST',
-                    body: formData,
-                  }
-                );
-
-              let data: {
-                detail?: string;
-                message?: string;
-              } = {};
-
-              try {
-                data =
-                  await response.json();
-              } catch {
-                // Non-JSON response.
-              }
-
-              if (!response.ok) {
-                throw new Error(
-                  data.detail ||
-                    data.message ||
-                    'Email could not be sent.'
-                );
-              }
-
-              setEmailStatus(
-                'Email sent successfully.'
-              );
-            } catch (err) {
-              setEmailStatus(
-                err instanceof Error
-                  ? err.message
-                  : 'Email could not be sent.'
-              );
-            } finally {
-              setEmailSending(
-                false
-              );
-            }
-          }}
-        />
-      )}
-    </div>
-  );
-}
 
 /*
  * ============================================================
