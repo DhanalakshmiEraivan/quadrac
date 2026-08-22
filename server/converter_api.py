@@ -184,21 +184,18 @@ app = FastAPI(
 )
 
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_credentials=ALLOW_CREDENTIALS,
-    allow_methods=[
-        "GET",
-        "POST",
-        "OPTIONS",
+    allow_origins=[
+        "http://localhost:5173",
+        "https://quadraconverter.in",
+        "http://localhost:8000"
     ],
+    allow_credentials=True,
+    allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=[
-        "Content-Disposition",
-        "X-Converted-Filename",
-        "X-Conversion-Engine",
-    ],
 )
 
 
