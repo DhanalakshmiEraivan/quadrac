@@ -1126,70 +1126,84 @@ export async function htmlToPDFFile(
 
 // ─── PDF to JPG ─────────────────────────────────────────────
 
+// src/lib/pdf-converters.ts
+
+// REPLACE the existing pdfToJPG() FUNCTION with this
+
 export async function pdfToJPG(
   file: File,
-  quality: number,
+  quality: number = 90,
   pageRange?: string,
 ): Promise<ConvertResult[]> {
+  if (!file) {
+    throw new Error('Please select a PDF file.');
+  }
+
   const pdfjsLib = await loadPdfjs();
-
   const data = await fileToArrayBuffer(file);
-  const pdf = await pdfjsLib.getDocument({ data }).promise;
 
-  let pagesToConvert: number[] = [];
+  const loadingTask = pdfjsLib.getDocument({
+    data,
+    useWorkerFetch: true,
+    isEvalSupported: true,
+  });
+
+  const pdf = await loadingTask.promise;
+
+  const pagesToConvert: number[] = [];
 
   if (
     !pageRange ||
     pageRange.trim().toLowerCase() === 'all'
   ) {
-    pagesToConvert = Array.from(
-      { length: pdf.numPages },
-      (_, index) => index + 1,
-    );
+    for (let i = 1; i <= pdf.numPages; i += 1) {
+      pagesToConvert.push(i);
+    }
   } else {
-    const pages = new Set<number>();
+    const requested = new Set<number>();
 
     for (const part of pageRange
       .split(',')
       .map((value) => value.trim())
       .filter(Boolean)) {
-      const rangeMatch = part.match(/^(\d+)\s*-\s*(\d+)$/);
+      const match = part.match(/^(\d+)\s*-\s*(\d+)$/);
 
-      if (rangeMatch) {
-        const first = Number.parseInt(rangeMatch[1], 10);
-        const last = Number.parseInt(rangeMatch[2], 10);
+      if (match) {
+        const start = Number.parseInt(match[1], 10);
+        const end = Number.parseInt(match[2], 10);
 
         for (
-          let pageNumber = Math.min(first, last);
-          pageNumber <= Math.max(first, last);
+          let pageNumber = Math.min(start, end);
+          pageNumber <= Math.max(start, end);
           pageNumber += 1
         ) {
           if (
             pageNumber >= 1 &&
             pageNumber <= pdf.numPages
           ) {
-            pages.add(pageNumber);
+            requested.add(pageNumber);
           }
         }
       } else {
         const pageNumber = Number.parseInt(part, 10);
 
         if (
+          Number.isInteger(pageNumber) &&
           pageNumber >= 1 &&
           pageNumber <= pdf.numPages
         ) {
-          pages.add(pageNumber);
+          requested.add(pageNumber);
         }
       }
     }
 
-    pagesToConvert = Array.from(pages).sort(
-      (a, b) => a - b,
+    pagesToConvert.push(
+      ...Array.from(requested).sort((a, b) => a - b),
     );
   }
 
   if (!pagesToConvert.length) {
-    await pdf.destroy();
+    await safelyDestroyPdf(pdf);
     throw new Error('No valid pages were selected.');
   }
 
@@ -1203,56 +1217,91 @@ export async function pdfToJPG(
   try {
     for (const pageNumber of pagesToConvert) {
       const page = await pdf.getPage(pageNumber);
-      const viewport = page.getViewport({ scale: 2 });
 
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.ceil(viewport.width);
-      canvas.height = Math.ceil(viewport.height);
+      try {
+        const viewport = page.getViewport({
+          scale: 2,
+        });
 
-      const context = canvas.getContext('2d');
+        const canvas = document.createElement('canvas');
 
-      if (!context) {
-        throw new Error('Could not create PDF image canvas.');
-      }
+        canvas.width = Math.ceil(viewport.width);
+        canvas.height = Math.ceil(viewport.height);
 
-      context.fillStyle = '#ffffff';
-      context.fillRect(0, 0, canvas.width, canvas.height);
+        const context = canvas.getContext('2d', {
+          alpha: false,
+        });
 
-      await page.render({
-        canvasContext: context,
-        viewport,
-        background: '#ffffff',
-      }).promise;
+        if (!context) {
+          throw new Error(
+            'Could not create PDF image canvas.',
+          );
+        }
 
-      const blob = await new Promise<Blob>((resolve, reject) => {
-        canvas.toBlob(
-          (value) => {
-            if (value) {
-              resolve(value);
-            } else {
-              reject(new Error('Could not create JPG output.'));
-            }
-          },
-          'image/jpeg',
-          qualityValue,
+        context.fillStyle = '#ffffff';
+        context.fillRect(
+          0,
+          0,
+          canvas.width,
+          canvas.height,
         );
-      });
 
-      results.push({
-        blob,
-        filename: `page_${pageNumber}.jpg`,
-        mimeType: 'image/jpeg',
-        preview: canvas.toDataURL(
+        await page.render({
+          canvasContext: context,
+          viewport,
+          background: '#ffffff',
+        }).promise;
+
+        const blob = await new Promise<Blob>(
+          (resolve, reject) => {
+            canvas.toBlob(
+              (value) => {
+                if (value) {
+                  resolve(value);
+                } else {
+                  reject(
+                    new Error(
+                      'Could not create JPG output.',
+                    ),
+                  );
+                }
+              },
+              'image/jpeg',
+              qualityValue,
+            );
+          },
+        );
+
+        const preview = canvas.toDataURL(
           'image/jpeg',
           Math.min(0.5, qualityValue),
-        ),
-      });
+        );
 
-      canvas.width = 1;
-      canvas.height = 1;
+        results.push({
+          blob,
+          filename: `page_${pageNumber}.jpg`,
+          mimeType: 'image/jpeg',
+          preview,
+        });
+
+        canvas.width = 1;
+        canvas.height = 1;
+
+        if (typeof page.cleanup === 'function') {
+          page.cleanup();
+        }
+      } catch (error) {
+        throw new Error(
+          `Failed to convert PDF page ${pageNumber}: ${
+            error instanceof Error
+              ? error.message
+              : String(error)
+          }`,
+        );
+      }
     }
   } finally {
-    await pdf.destroy();
+    await safelyDestroyPdf(pdf);
   }
 
   return results;
