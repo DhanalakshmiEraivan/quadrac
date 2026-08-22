@@ -2768,14 +2768,12 @@ export function ToolWorkspace({
 
             try {
               const apiUrl =
-                import.meta.env
-                  .VITE_CONVERTER_API_URL;
+  import.meta.env.VITE_CONVERTER_API_URL ||
+  "http://localhost:8000";
 
-              if (!apiUrl) {
-                throw new Error(
-                  'Email service is not configured.'
-                );
-              }
+if (!apiUrl) {
+  throw new Error("Backend URL is missing.");
+}
 
               const formData =
                 new FormData();
