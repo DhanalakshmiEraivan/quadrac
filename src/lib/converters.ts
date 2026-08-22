@@ -1107,4 +1107,3 @@ function encodeCanvasAsBMP(canvas: HTMLCanvasElement): Blob {
   }
   return new Blob([buffer], { type: 'image/bmp' });
 }
-
